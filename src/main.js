@@ -94,7 +94,7 @@ $('sel-start').onclick = () => {
   audio.ensure(); audio.click();
   if (sel.mode === 'versus' && sel.step === 1) { sel.step = 2; renderSelect(); return; }
   if (sel.mode === 'campaign') {
-    launchBattle({ mode: 'campaign', arena: CAMPAIGN[0].arena, p1Hero: sel.p1, p2Hero: CAMPAIGN[0].ai, p2AI: CAMPAIGN[0].diff, campaignIndex: 0 });
+    launchBattle({ mode: 'campaign', arena: CAMPAIGN[0].arena, p1Hero: sel.p1, p2Hero: CAMPAIGN[0].ai, p2AI: CAMPAIGN[0].diff, campaignIndex: 0, campaignTotal: CAMPAIGN.length });
     game.campaignDiff = CAMPAIGN[0].diff;
   } else if (sel.mode === 'versus') {
     launchBattle({ mode: 'versus', arena: sel.arena, p1Hero: sel.p1, p2Hero: sel.p2, p2AI: null });
@@ -159,7 +159,7 @@ game.ui.onGameOver = (r) => {
 $('over-next').onclick = () => {
   audio.click();
   const next = CAMPAIGN[game.campaignIndex + 1];
-  const opts = { mode: 'campaign', arena: next.arena, p1Hero: game.campaignHero || 'kairo', p2Hero: next.ai, p2AI: next.diff, campaignIndex: game.campaignIndex + 1, elite: !!next.elite };
+  const opts = { mode: 'campaign', arena: next.arena, p1Hero: game.campaignHero || 'kairo', p2Hero: next.ai, p2AI: next.diff, campaignIndex: game.campaignIndex + 1, elite: !!next.elite, campaignTotal: CAMPAIGN.length };
   game.campaignDiff = next.diff;
   launchBattle(opts);
 };

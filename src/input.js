@@ -35,11 +35,14 @@ export class Input {
       if (x >= s.x && x <= s.x + s.w && y >= s.y && y <= s.y + s.h) { g.useSkill(s.slot); return true; }
     }
     // v2 — utility buttons: Teleport / Trap / Heal.
+    // v2.1 — PASS (skips the turn) and EMOTE (visual only).
     for (const u of (this.renderer.uiRegions.utility || [])) {
       if (x >= u.x && x <= u.x + u.w && y >= u.y && y <= u.y + u.h) {
         if (u.id === 'teleport') g.useTeleport();
         else if (u.id === 'trap') g.placeTrap();
         else if (u.id === 'heal') g.useHeal();
+        else if (u.id === 'pass') g.passTurn();
+        else if (u.id === 'emote') g.emote();
         return true;
       }
     }
@@ -84,6 +87,9 @@ export class Input {
         if (e.code === 'KeyT') g.useTeleport();
         if (e.code === 'KeyR') g.placeTrap();
         if (e.code === 'KeyH') g.useHeal();
+        // v2.1: P pass the turn, G emote (visual only, turn continues).
+        if (e.code === 'KeyP') g.passTurn();
+        if (e.code === 'KeyG') g.emote();
       }
       if (e.code === 'Escape') {
         // v2 — Esc first cancels teleport targeting, then pauses.

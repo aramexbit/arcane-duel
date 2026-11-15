@@ -242,6 +242,14 @@ export class Renderer {
       }
       // Name tag.
       text(ctx, `${p.hero.name}`, p.x, p.y - 158, 13, '#ffffff', 'center');
+      // v2.1 — emote bubble above the hero who emoted (visual only).
+      if (game.emoteBubble && game.emoteBubble.player === game.players.indexOf(p)) {
+        const ey = p.y - 208;
+        ctx.beginPath(); ctx.arc(p.x, ey, 24, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(255,255,255,0.92)'; ctx.fill();
+        ctx.strokeStyle = 'rgba(10,10,30,0.6)'; ctx.lineWidth = 2; ctx.stroke();
+        text(ctx, game.emoteBubble.emoji, p.x, ey + 1, 24, '#222', 'center');
+      }
       // Falling indicator.
       if (p.falling) text(ctx, '!', p.x, p.y - 180, 22, '#ffd76a', 'center');
     }
@@ -309,7 +317,7 @@ export class Renderer {
     const ctx = this.ctx;
     for (const f of game.floaters) {
       ctx.globalAlpha = 1 - f.t / f.dur;
-      text(ctx, f.text, f.x, f.y, 20, f.color, 'center');
+      text(ctx, f.text, f.x, f.y, f.size || 20, f.color, 'center');
     }
     ctx.globalAlpha = 1;
   }
@@ -319,13 +327,27 @@ export class Renderer {
     // Top player cards.
     this._playerCard(game, 0, 16, 14, false);
     this._playerCard(game, 1, W - 316, 14, true);
-    // Center: turn + timer + wind.
+    // Center: VS header + remaining enemies + wind/timer.
+    // v2.1 — three clean lines (was two cramped lines: turn name + wind/timer
+    // overlapped). Line 1: hero names + VS, each in its hero colour.
     const p = game.players[game.turn];
-    rr(ctx, W / 2 - 190, 12, 380, 46, 12); ctx.fillStyle = 'rgba(8,12,30,0.72)'; ctx.fill();
+    const h0 = game.players[0], h1 = game.players[1];
+    rr(ctx, W / 2 - 190, 12, 380, 72, 12); ctx.fillStyle = 'rgba(8,12,30,0.72)'; ctx.fill();
     ctx.strokeStyle = 'rgba(255,215,106,0.8)'; ctx.lineWidth = 2; ctx.stroke();
-    text(ctx, game.phase === 'over' ? 'DUEL OVER' : `${p.name} • ${p.hero.name}`, W / 2, 28, 15, '#ffd76a', 'center');
+    if (game.phase === 'over') {
+      text(ctx, 'DUEL OVER', W / 2, 30, 15, '#ffd76a', 'center');
+    } else {
+      text(ctx, h0.hero.name, W / 2 - 34, 30, 15, h0.hero.color, 'right');
+      text(ctx, 'VS', W / 2, 30, 15, '#ffd76a', 'center');
+      text(ctx, h1.hero.name, W / 2 + 34, 30, 15, h1.hero.color, 'left');
+      // Turn marker: a gold dot outside the active hero's name.
+      const dotX = game.turn === 0 ? W / 2 - 112 : W / 2 + 112;
+      ctx.fillStyle = '#ffd76a';
+      ctx.beginPath(); ctx.arc(dotX, 30, 4, 0, Math.PI * 2); ctx.fill();
+    }
+    text(ctx, `${p.name}'s turn  •  ${game.remainingLabel()}`, W / 2, 50, 12, '#ffffff', 'center');
     const windArrow = game.wind === 0 ? '—' : game.wind > 0 ? '→' : '←';
-    text(ctx, `WIND ${windArrow} ${Math.abs(game.wind)}    ⏱ ${Math.ceil(game.turnTimer)}s`, W / 2, 48, 13, '#ffffff', 'center');
+    text(ctx, `WIND ${windArrow} ${Math.abs(game.wind)}    ⏱ ${Math.ceil(game.turnTimer)}s`, W / 2, 68, 13, '#ffffff', 'center');
     // Aim readout (active player, bottom center-left).
     if (game.state === 'combat' && game.phase === 'aim') {
       rr(ctx, W / 2 - 150, H - 108, 300, 34, 10); ctx.fillStyle = 'rgba(8,12,30,0.72)'; ctx.fill();
@@ -378,23 +400,30 @@ export class Renderer {
     text(ctx, sk.map(s => s.name).join('  •  '), W - 16, H - 52, 12, 'rgba(255,255,255,0.85)', 'right');
     // v2 — utility buttons (bottom centre): Teleport / Trap / Heal. Free
     // actions: they cost energy + cooldown but do not end the turn.
+    // v2.1 — PASS (skips the turn) and EMOTE (visual only) join the row.
     if (game.state === 'combat') {
       const utils = [
+        { id: 'pass', label: '⏭ PASS [P]', cost: null, ready: game.phase === 'aim' },
         { id: 'teleport', label: '✨ TELEPORT [T]', cost: game.teleportCost(p0), ready: game.utilityReady(p0, 'teleport') },
         { id: 'trap', label: '🪞 TRAP [R]', cost: 35, ready: game.utilityReady(p0, 'trap') },
         { id: 'heal', label: '💚 HEAL [H]', cost: 40, ready: game.utilityReady(p0, 'heal') },
+        { id: 'emote', label: '😤 EMOTE [G]', cost: null, ready: game.phase === 'aim' },
       ];
-      let ux = W / 2 - 195;
+      let ux = W / 2 - 316;
       for (const u of utils) {
-        rr(ctx, ux, H - 62, 124, 34, 9);
+        rr(ctx, ux, H - 62, 120, 34, 9);
         ctx.fillStyle = u.ready ? 'rgba(90,140,255,0.85)' : 'rgba(8,12,30,0.78)'; ctx.fill();
         ctx.strokeStyle = u.ready ? '#fff' : 'rgba(255,255,255,0.4)'; ctx.lineWidth = u.ready ? 2.5 : 1.5; ctx.stroke();
         ctx.globalAlpha = u.ready ? 1 : 0.6;
-        text(ctx, u.label, ux + 62, H - 51, 12, '#fff', 'center');
-        text(ctx, `${u.cost}⚡`, ux + 62, H - 36, 10, '#fff', 'center');
+        if (u.cost === null) {
+          text(ctx, u.label, ux + 60, H - 45, 12, '#fff', 'center');
+        } else {
+          text(ctx, u.label, ux + 60, H - 51, 12, '#fff', 'center');
+          text(ctx, `${u.cost}⚡`, ux + 60, H - 36, 10, '#fff', 'center');
+        }
         ctx.globalAlpha = 1;
-        this.uiRegions.utility.push({ x: ux, y: H - 62, w: 124, h: 34, id: u.id });
-        ux += 132;
+        this.uiRegions.utility.push({ x: ux, y: H - 62, w: 120, h: 34, id: u.id });
+        ux += 128;
       }
       // Active trap indicator.
       if (game.traps.some(t => t.owner === game.turn)) {

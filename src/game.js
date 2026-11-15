@@ -19,6 +19,8 @@ export class Game {
     // v2: reflect traps, teleport targeting, AI telegraph, walk meter.
     this.traps = []; this.teleportMode = false; this.moveDir = 0;
     this.aiTelegraph = null; this.aiTelegraphSeen = false; this.aiUtils = 0;
+    // v2.1: emote bubble above the active hero (visual only).
+    this.emoteBubble = null;
     // Facebook-era flavour, original implementation: Duel Coins persist
     // across sessions; crates/barrels drop into the arena every few turns.
     this.crates = [];
@@ -38,6 +40,7 @@ export class Game {
     this.trainingTip = 0; this.winner = null; this.crates = []; this.battleCoins = 0;
     this.traps = []; this.teleportMode = false; this.moveDir = 0;
     this.aiTelegraph = null; this.aiUtils = 0;
+    this.emoteBubble = null; // v2.1
   }
 
   // ------------------------------------------------------------ setup
@@ -46,6 +49,7 @@ export class Game {
     this.resetMeta();
     this.mode = opts.mode; this.state = 'combat';
     this.campaignIndex = opts.campaignIndex ?? 0;
+    this.campaignTotal = opts.campaignTotal || 4; // v2.1: VS header counts battles left
     const seed = (opts.seed ?? Math.floor(Math.random() * 1e9)) >>> 0;
     this.terrain = new Terrain(opts.arena, seed);
     this.arenaId = opts.arena;
@@ -83,6 +87,35 @@ export class Game {
 
   active() { return this.players[this.turn]; }
   opponent() { return this.players[1 - this.turn]; }
+
+  // ------------------------------------------------------------ v2.1: PASS + emote + remaining counter
+  // PASS (Perjuangan Semut reference): skip the turn without shooting.
+  // Ends the turn immediately; the rival plays next.
+  passTurn() {
+    if (this.state !== 'combat' || this.phase !== 'aim') return false;
+    const p = this.active();
+    this.teleportMode = false;
+    this.setBanner('⏭ PASS', `${p.name} skips the turn`, 1.4, '#bfe9ff');
+    this.audio.click();
+    this.nextTurn();
+    return true;
+  }
+  // Emote: a fun bubble above the active hero (visual only — costs nothing,
+  // spends no energy, does NOT end the turn).
+  emote() {
+    if (this.state !== 'combat' || this.phase !== 'aim') return false;
+    const EMOTES = ['😤', '😂', '💪'];
+    const emoji = EMOTES[Math.floor(Math.random() * EMOTES.length)];
+    this.emoteBubble = { player: this.turn, emoji, t: 0, dur: 2.5 };
+    this.audio.emote();
+    return true;
+  }
+  // VS header counter: campaign = battles left (incl. current), versus = 1 rival.
+  remainingLabel() {
+    if (this.mode === 'campaign') return `Musuh tersisa: ${Math.max(0, (this.campaignTotal || 4) - this.campaignIndex)}`;
+    if (this.mode === 'training') return '🎯 Latihan — dummy';
+    return '⚔ Duel 1 lawan 1';
+  }
 
   // ------------------------------------------------------------ aiming / firing
   setAim(angle, power) {
@@ -388,7 +421,8 @@ export class Game {
     if (dmg <= 0) { this._floater(p.x, p.y - 120, 'BLOCKED!', '#7ec8f7'); return 0; }
     p.hp = Math.max(0, p.hp - dmg);
     p.pose = 'hit'; p.poseT = 0.55;
-    this._floater(p.x, p.y - 130, `-${dmg}${crit ? ' CRIT!' : ''}`, crit ? '#ffd76a' : '#ff6a5e');
+    // v2.1: floating damage number — bigger + gold on crit.
+    this._floater(p.x, p.y - 130, `-${dmg}${crit ? ' CRIT!' : ''}`, crit ? '#ffd76a' : '#ff6a5e', crit ? 26 : 20);
     this.stats.damage[this.turn] += dmg;
     // Duel Coins: the attacker earns coins for damage dealt.
     if (idx !== this.turn) this.addCoins(Math.max(1, Math.floor(dmg / 5)));
@@ -471,7 +505,7 @@ export class Game {
         grav: smoke ? -30 : 320, kind: smoke ? 'smoke' : 'circle' });
     }
   }
-  _floater(x, y, text, color) { this.floaters.push({ x, y, text, color, t: 0, dur: 1.1 }); }
+  _floater(x, y, text, color, size = 20) { this.floaters.push({ x, y, text, color, size, t: 0, dur: 1.1 }); }
   setBanner(text, sub, dur = 2, color = '#ffd76a') { this.banner = { text, sub, t: 0, dur, color }; }
 
   // ------------------------------------------------------------ AI
@@ -495,11 +529,15 @@ export class Game {
     }
     if (p.energy >= 40 && Math.random() < diff.skillUse) return { kind: 'skill1' };
     if (p.hp < 35 && p.ammo.shield > 0 && Math.random() < 0.5) return { kind: 'shield' };
+    // v2.1 — rare PASS: the AI occasionally skips a hopeless turn instead of
+    // wasting a shot (kept rare — 4% — so it never looks passive).
+    if (Math.random() < 0.04) return { kind: 'pass' };
     return { kind: 'shoot' };
   }
   _execAiPlan(plan) {
     const p = this.active(), foe = this.opponent();
     const diff = DIFFICULTY[this.campaignDiff || 'normal'];
+    if (plan.kind === 'pass') { this.passTurn(); return; } // v2.1
     if (plan.kind === 'ult') { this.useSkill(3); return; }
     if (plan.kind === 'skill1') { if (this.useSkill(1)) return; }
     if (plan.kind === 'shield') { this._fireWeapon('shield'); return; }
@@ -553,6 +591,8 @@ export class Game {
   update(dt) {
     this.time += dt;
     if (this.banner) { this.banner.t += dt; if (this.banner.t > this.banner.dur) this.banner = null; }
+    // v2.1: emote bubble lifetime.
+    if (this.emoteBubble) { this.emoteBubble.t += dt; if (this.emoteBubble.t > this.emoteBubble.dur) this.emoteBubble = null; }
     this.shake = Math.max(0, this.shake - dt * 26);
     for (const pt of this.particles) { pt.life += dt; pt.x += pt.vx * dt; pt.y += pt.vy * dt; pt.vy += pt.grav * dt; }
     this.particles = this.particles.filter(p => p.life < p.max);
@@ -762,7 +802,12 @@ export class Game {
       // Direct hit: full damage at the target point, plus blast.
       this.explode(pr.x, pr.y, { dmg: def.dmg, radius: def.radius, elem: def.elem }, pr.owner);
     } else {
+      // v2.1: a blast that hurts nobody shows a floating MISS.
+      const hpBefore = this.players.map(p => p.hp);
+      const shBefore = this.players.map(p => p.shield);
       this.explode(pr.x, pr.y, def, pr.owner, { noCrater: pr.kind === 'beam' });
+      const hurtAnyone = this.players.some((p, i) => p.hp < hpBefore[i] || p.shield < shBefore[i]);
+      if (!hurtAnyone) this._floater(pr.x, pr.y - 40, 'MISS', '#d8d8d8', 18);
     }
   }
 
