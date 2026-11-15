@@ -1,12 +1,12 @@
 // ARCANE DUEL — all canvas rendering: arena, terrain, heroes, HUD, effects.
-import { W, H, WEAPONS, WEAPON_ORDER, ARENAS } from './config.js';
+import { W, WORLD_W, H, WEAPONS, WEAPON_ORDER, ARENAS, FULL_POWER } from './config.js';
 
 const SPRITES = {};
 const SPRITE_LIST = [];
 // Filled by main.js via loadAssets().
 export function imageFor(name) { return SPRITES[name] || null; }
 export function loadAssets() {
-  const heroes = ['kairo', 'nyx', 'bront'];
+  const heroes = ['kairo', 'nyx', 'bront', 'kumbang', 'momok', 'tawon']; // v3: +3 monsters
   const poses = ['idle_0', 'idle_1', 'aim', 'fire', 'hit', 'victory', 'defeat'];
   for (const h of heroes) for (const p of poses) SPRITE_LIST.push(`${h}_${p}`);
   for (const h of heroes) SPRITE_LIST.push(`portrait_${h}`);
@@ -57,18 +57,14 @@ export class Renderer {
     // both heroes stay in frame).
     let zx = 1, zy = 1, ox = 0, oy = 0;
     if (game.cine) { const s = 1.08; const fx = (game.players[0].x + game.players[1].x) / 2, fy = 430; zx = s; ox = W / 2 - fx * s; oy = H / 2 - fy * s; }
-    // v2 — camera follows the projectile in flight (gentle zoom-in, clamped
-    // so the world edges never show bare canvas). This is what makes enemy
-    // shots visible: the eye rides along with the shell.
-    else if (game.phase === 'flying' && game.projectiles.length) {
-      let fx = 0, fy = 0, n = 0;
-      for (const pr of game.projectiles) { fx += pr.x; fy += pr.y; n++; }
-      fx /= n; fy /= n;
-      const s = 1.06;
-      zx = s; zy = s;
-      ox = Math.max(-77, Math.min(0, W / 2 - fx * s));
-      oy = Math.max(-43, Math.min(0, H / 2 - fy * s));
-    }
+    // v3 — the world camera lives in game.camX (scrolls across the wider
+    // map, following the hero / projectile). During flight we only add a
+    // gentle zoom; the position comes from camX, not from a second offset.
+    else if (game.phase === 'flying' && game.projectiles.length) { zx = 1.06; zy = 1.06; }
+    // v3 — apply the world camera (ignored during cinematics, which centre
+    // themselves). camX is in world px; the translate runs pre-scale.
+    const cam = game.cine ? 0 : (game.camX || 0);
+    ox -= cam * zx;
     if (game.shake > 0.5) { ox += (Math.random() - 0.5) * game.shake; oy += (Math.random() - 0.5) * game.shake; }
     ctx.translate(ox, oy); ctx.scale(zx, zy);
     this._background(game, now);
@@ -91,7 +87,7 @@ export class Renderer {
     const arena = ARENAS[game.arenaId || 'valley'];
     const g = ctx.createLinearGradient(0, 0, 0, H);
     g.addColorStop(0, arena.sky[0]); g.addColorStop(0.55, arena.sky[1]); g.addColorStop(1, arena.sky[2]);
-    ctx.fillStyle = g; ctx.fillRect(-40, -40, W + 80, H + 80);
+    ctx.fillStyle = g; ctx.fillRect(-40, -40, WORLD_W + 80, H + 80);
     // Moon / sun.
     const moon = imageFor('decor_moon');
     if (moon && game.arenaId !== 'canyon') ctx.drawImage(moon, 1050, 46, 128, 128);
@@ -103,14 +99,14 @@ export class Renderer {
     // Drifting clouds.
     const cloud = imageFor('decor_cloud');
     if (cloud) {
-      for (let i = 0; i < 4; i++) {
-        const cx = ((i * 340 + now * (6 + i * 2)) % (W + 320)) - 160;
-        ctx.globalAlpha = 0.5; ctx.drawImage(cloud, cx, 60 + i * 42, 160, 64); ctx.globalAlpha = 1;
+      for (let i = 0; i < 6; i++) {
+        const cx = ((i * 360 + now * (6 + i * 2)) % (WORLD_W + 320)) - 160;
+        ctx.globalAlpha = 0.5; ctx.drawImage(cloud, cx, 60 + (i % 4) * 42, 160, 64); ctx.globalAlpha = 1;
       }
     }
     // Far ruin silhouettes (parallax layer).
     ctx.fillStyle = arena.far; ctx.globalAlpha = 0.55;
-    for (let i = 0; i < 7; i++) {
+    for (let i = 0; i < 11; i++) {
       const bx = i * 190 + 30, bw = 60 + (i % 3) * 26, bh = 150 + ((i * 53) % 120);
       ctx.fillRect(bx, 560 - bh, bw, bh);
       ctx.beginPath(); ctx.moveTo(bx - 8, 560 - bh); ctx.lineTo(bx + bw / 2, 560 - bh - 34); ctx.lineTo(bx + bw + 8, 560 - bh); ctx.closePath(); ctx.fill();
@@ -119,7 +115,7 @@ export class Renderer {
     // Arena decor: crystals / lava rocks / temple pillars along the ground.
     const t = game.terrain;
     if (t) {
-      const spots = [140, 330, 520, 700, 880, 1160];
+      const spots = [140, 420, 700, 980, 1260, 1540, 1820];
       for (let i = 0; i < spots.length; i++) {
         const x = spots[i], gy = t.groundY(x);
         if (arena.decor === 'crystal') {
@@ -137,7 +133,7 @@ export class Renderer {
       }
       // Grass tufts + flowers.
       const grass = imageFor('decor_grass'), flower = imageFor('decor_flower');
-      for (let x = 40; x < W; x += 90) {
+      for (let x = 40; x < WORLD_W; x += 90) {
         const gy = t.groundY(x);
         if (grass) ctx.drawImage(grass, x, gy - 22, 30, 22);
         if (flower && x % 270 === 40) ctx.drawImage(flower, x + 24, gy - 20, 20, 20);
@@ -149,23 +145,23 @@ export class Renderer {
     if (!t) return;
     const a = t.arena;
     ctx.beginPath(); ctx.moveTo(0, H);
-    for (let x = 0; x < W; x += 4) ctx.lineTo(x, t.h[x]);
-    ctx.lineTo(W, H); ctx.closePath();
+    for (let x = 0; x < WORLD_W; x += 4) ctx.lineTo(x, t.h[x]);
+    ctx.lineTo(WORLD_W, H); ctx.closePath();
     ctx.fillStyle = a.ground; ctx.fill();
     // Top grassy/stone rim + speckles.
     ctx.beginPath();
-    for (let x = 0; x < W; x += 4) { const y = t.h[x]; ctx.moveTo(x, y); ctx.lineTo(x + 4, y); }
+    for (let x = 0; x < WORLD_W; x += 4) { const y = t.h[x]; ctx.moveTo(x, y); ctx.lineTo(x + 4, y); }
     ctx.strokeStyle = a.groundL; ctx.lineWidth = 6; ctx.stroke();
     ctx.fillStyle = a.groundD;
-    for (let x = 12; x < W; x += 47) { const y = t.groundY(x) + 18 + ((x * 7) % 26); ctx.fillRect(x, y, 14, 8); }
+    for (let x = 12; x < WORLD_W; x += 47) { const y = t.groundY(x) + 18 + ((x * 7) % 26); ctx.fillRect(x, y, 14, 8); }
     // Lava pool at the very bottom in Ember Canyon.
     if (game.arenaId === 'canyon') {
       ctx.fillStyle = '#ff5a1a';
       ctx.beginPath(); ctx.moveTo(0, 700);
-      for (let x = 0; x <= W; x += 20) ctx.lineTo(x, 700 + Math.sin(x * 0.02 + game.time * 2) * 3);
-      ctx.lineTo(W, H); ctx.lineTo(0, H); ctx.closePath(); ctx.fill();
+      for (let x = 0; x <= WORLD_W; x += 20) ctx.lineTo(x, 700 + Math.sin(x * 0.02 + game.time * 2) * 3);
+      ctx.lineTo(WORLD_W, H); ctx.lineTo(0, H); ctx.closePath(); ctx.fill();
       ctx.fillStyle = '#ffd76a';
-      for (let x = 30; x < W; x += 110) { ctx.beginPath(); ctx.ellipse(x, 708, 16, 4, 0, 0, Math.PI * 2); ctx.fill(); }
+      for (let x = 30; x < WORLD_W; x += 110) { ctx.beginPath(); ctx.ellipse(x, 708, 16, 4, 0, 0, Math.PI * 2); ctx.fill(); }
     }
   }
   _zones(game, now) {
@@ -306,9 +302,22 @@ export class Renderer {
   }
   _preview(game) {
     const ctx = this.ctx;
-    if (game.state !== 'combat' || game.phase !== 'aim') return;
+    if (game.state !== 'combat' || game.phase !== 'aim' || !game.showPreview) return;
+    // v3 — aim fan (Worms-style arc, from the user's reference image):
+    // a translucent sector from the muzzle spanning ±25° around the aim.
+    const p = game.active();
+    const m = game._muzzle(p);
+    const worldAng = game.worldAngle() * Math.PI / 180;
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(m.x, m.y);
+    ctx.arc(m.x, m.y, 150, -worldAng - 0.44, -worldAng + 0.44);
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(255,215,106,0.10)'; ctx.fill();
+    ctx.strokeStyle = 'rgba(255,215,106,0.45)'; ctx.lineWidth = 1.5; ctx.stroke();
+    ctx.restore();
     const pts = game.previewPoints();
-    const full = game.aim.power >= 950;
+    const full = game.aim.power >= FULL_POWER;
     ctx.fillStyle = full ? 'rgba(255,215,106,1)' : 'rgba(255,255,255,0.9)';
     pts.forEach(([x, y], i) => { ctx.globalAlpha = 0.95 - i * 0.03; ctx.beginPath(); ctx.arc(x, y, full ? 5 : i === 0 ? 5 : 3.5, 0, Math.PI * 2); ctx.fill(); });
     ctx.globalAlpha = 1;
@@ -323,7 +332,7 @@ export class Renderer {
   }
   _hud(game, now) {
     const ctx = this.ctx;
-    this.uiRegions = { weapons: [], skills: [], utility: [] };
+    this.uiRegions = { weapons: [], skills: [], utility: [], powFire: null, fireBtn: null, dpad: [] };
     // Top player cards.
     this._playerCard(game, 0, 16, 14, false);
     this._playerCard(game, 1, W - 316, 14, true);
@@ -347,13 +356,23 @@ export class Renderer {
     }
     text(ctx, `${p.name}'s turn  •  ${game.remainingLabel()}`, W / 2, 50, 12, '#ffffff', 'center');
     const windArrow = game.wind === 0 ? '—' : game.wind > 0 ? '→' : '←';
-    text(ctx, `WIND ${windArrow} ${Math.abs(game.wind)}    ⏱ ${Math.ceil(game.turnTimer)}s`, W / 2, 68, 13, '#ffffff', 'center');
+    text(ctx, `WIND ${windArrow} ${Math.abs(game.wind)}`, W / 2 - 52, 68, 13, '#ffffff', 'right');
+    // v3 — turn timer: big, red + pulsing under 5s (15s turns now).
+    const tLeft = Math.ceil(game.turnTimer);
+    const tColor = game.phase === 'aim' && tLeft <= 5 ? '#ff5a4e' : '#ffffff';
+    const tSize = game.phase === 'aim' && tLeft <= 5 ? 16 + Math.sin(now * 8) * 2 : 13;
+    text(ctx, `⏱ ${tLeft}s`, W / 2 + 52, 68, tSize, tColor, 'left');
     // Aim readout (active player, bottom center-left).
     if (game.state === 'combat' && game.phase === 'aim') {
+      // v3 — power is 0–100 now; show it as a number + a bar.
+      const pow = Math.round(game.aim.power);
       rr(ctx, W / 2 - 150, H - 108, 300, 34, 10); ctx.fillStyle = 'rgba(8,12,30,0.72)'; ctx.fill();
-      text(ctx, `ANGLE ${Math.round(game.aim.angle)}°    POWER ${Math.round(game.aim.power)}${game.aim.power >= 950 ? '  ★ FULL POWER!' : ''}`, W / 2, H - 90, 15, game.aim.power >= 950 ? '#ffd76a' : '#ffffff', 'center');
+      text(ctx, `ANGLE ${Math.round(game.aim.angle)}°    POWER ${pow}${pow >= FULL_POWER ? '  ★ FULL POWER!' : ''}`, W / 2, H - 96, 14, pow >= FULL_POWER ? '#ffd76a' : '#ffffff', 'center');
+      bar(ctx, W / 2 - 140, H - 82, 280, 7, pow / 100, pow >= FULL_POWER ? '#ffd76a' : '#ff7a2f');
       // v2 — walk meter under the aim readout.
       text(ctx, `MOVE [A/D]: ${Math.round(p.moveSteps)}px left this turn`, W / 2, H - 116, 11, '#bfe9ff', 'center');
+      // v3 — charging indicator while Space is held.
+      if (game.charging) text(ctx, '⚡ CHARGING… release SPACE to fire!', W / 2, H - 132, 13, '#ffd76a', 'center');
     }
     // Weapon inventory (bottom left).
     const p0 = game.active();
@@ -364,6 +383,7 @@ export class Renderer {
       const sel = game.selectedWeapon === id;
       const ammo = p0.ammo[id];
       const avail = ammo > 0;
+      const locked = !p0.ai && !game.ownsWeapon(id); // v3 — shop-locked weapon (human side only)
       rr(ctx, wx, H - 128, 58, 58, 10);
       ctx.fillStyle = sel ? 'rgba(255,215,106,0.9)' : 'rgba(8,12,30,0.78)'; ctx.fill();
       ctx.strokeStyle = sel ? '#fff' : 'rgba(255,255,255,0.4)'; ctx.lineWidth = sel ? 3 : 1.5; ctx.stroke();
@@ -371,7 +391,8 @@ export class Renderer {
       const spr = { cannon: 'proj_cannon', triple: 'proj_cluster', meteor: 'proj_meteor', homing: 'proj_homing', pierce: 'proj_pierce', cluster: 'proj_cluster', beam: 'proj_beam', shield: 'proj_shield' }[id];
       const img = imageFor(spr);
       if (img) ctx.drawImage(img, wx + 11, H - 122, 36, 36);
-      text(ctx, ammo === Infinity ? '∞' : String(ammo), wx + 48, H - 82, 12, '#fff', 'center');
+      if (locked) text(ctx, '🔒', wx + 29, H - 108, 20, '#ffd76a', 'center');
+      else text(ctx, ammo === Infinity ? '∞' : String(ammo), wx + 48, H - 82, 12, '#fff', 'center');
       ctx.globalAlpha = 1;
       this.uiRegions.weapons.push({ x: wx, y: H - 128, w: 58, h: 58, id });
       wx += 64;
@@ -398,15 +419,15 @@ export class Renderer {
     // Skill names tooltip line.
     const sk = [p0.hero.skill1, p0.hero.skill2, p0.hero.ult];
     text(ctx, sk.map(s => s.name).join('  •  '), W - 16, H - 52, 12, 'rgba(255,255,255,0.85)', 'right');
-    // v2 — utility buttons (bottom centre): Teleport / Trap / Heal. Free
-    // actions: they cost energy + cooldown but do not end the turn.
+    // v2 — utility buttons (bottom centre): Teleport / Trap / Heal.
+    // v3 — teleport + heal END the turn (rule change); the labels say so.
     // v2.1 — PASS (skips the turn) and EMOTE (visual only) join the row.
     if (game.state === 'combat') {
       const utils = [
         { id: 'pass', label: '⏭ PASS [P]', cost: null, ready: game.phase === 'aim' },
-        { id: 'teleport', label: '✨ TELEPORT [T]', cost: game.teleportCost(p0), ready: game.utilityReady(p0, 'teleport') },
+        { id: 'teleport', label: '✨ TELEPORT [T]', sub: 'ends turn', cost: game.teleportCost(p0), ready: game.utilityReady(p0, 'teleport') },
         { id: 'trap', label: '🪞 TRAP [R]', cost: 35, ready: game.utilityReady(p0, 'trap') },
-        { id: 'heal', label: '💚 HEAL [H]', cost: 40, ready: game.utilityReady(p0, 'heal') },
+        { id: 'heal', label: '💚 HEAL [H]', sub: 'ends turn', cost: 40, ready: game.utilityReady(p0, 'heal') },
         { id: 'emote', label: '😤 EMOTE [G]', cost: null, ready: game.phase === 'aim' },
       ];
       let ux = W / 2 - 316;
@@ -417,6 +438,9 @@ export class Renderer {
         ctx.globalAlpha = u.ready ? 1 : 0.6;
         if (u.cost === null) {
           text(ctx, u.label, ux + 60, H - 45, 12, '#fff', 'center');
+        } else if (u.sub) {
+          text(ctx, u.label, ux + 60, H - 54, 11, '#fff', 'center');
+          text(ctx, `${u.cost}⚡ · ${u.sub}`, ux + 60, H - 38, 9, '#ffd76a', 'center');
         } else {
           text(ctx, u.label, ux + 60, H - 51, 12, '#fff', 'center');
           text(ctx, `${u.cost}⚡`, ux + 60, H - 36, 10, '#fff', 'center');
@@ -428,6 +452,33 @@ export class Renderer {
       // Active trap indicator.
       if (game.traps.some(t => t.owner === game.turn)) {
         text(ctx, '🪞 YOUR TRAP IS SET', W / 2, H - 132, 12, '#50dcf0', 'center');
+      }
+      // v3 — POW FIRE button: at power 100 a big flaming button appears;
+      // clicking it fires the FULL POWER move.
+      if (game.phase === 'aim' && game.aim.power >= FULL_POWER) {
+        const pulse = 1 + Math.sin(now * 6) * 0.06;
+        const bw = 240 * pulse, bh = 46;
+        const bx = W / 2 - bw / 2, by = H - 184; // clear of the MOVE/ANGLE text lines below
+        rr(ctx, bx, by, bw, bh, 12);
+        ctx.fillStyle = 'rgba(255,120,20,0.92)'; ctx.fill();
+        ctx.strokeStyle = '#ffd76a'; ctx.lineWidth = 3; ctx.stroke();
+        text(ctx, '🔥 POW FIRE! 🔥', W / 2, by + bh / 2, 20, '#fff', 'center');
+        this.uiRegions.powFire = { x: bx, y: by, w: bw, h: bh };
+      }
+      // v3 — touch controls: big FIRE button + ◀ ▶ walk pad (touch only).
+      if (game.touchMode && game.phase === 'aim') {
+        rr(ctx, W - 216, H - 196, 120, 56, 12);
+        ctx.fillStyle = 'rgba(255,90,40,0.92)'; ctx.fill();
+        ctx.strokeStyle = '#fff'; ctx.lineWidth = 3; ctx.stroke();
+        text(ctx, '🔥 FIRE', W - 156, H - 168, 20, '#fff', 'center');
+        this.uiRegions.fireBtn = { x: W - 216, y: H - 196, w: 120, h: 56 };
+        for (const [dir, label, dx] of [[-1, '◀', 0], [1, '▶', 64]]) {
+          rr(ctx, 16 + dx, H - 196, 56, 56, 12);
+          ctx.fillStyle = 'rgba(90,140,255,0.85)'; ctx.fill();
+          ctx.strokeStyle = '#fff'; ctx.lineWidth = 2.5; ctx.stroke();
+          text(ctx, label, 44 + dx, H - 168, 24, '#fff', 'center');
+          this.uiRegions.dpad.push({ x: 16 + dx, y: H - 196, w: 56, h: 56, dir });
+        }
       }
     }
     // Pause + mute buttons (below the P2 card, so they never overlap it).

@@ -63,6 +63,8 @@ export class AudioSys {
   heal() { [523, 659, 784, 1046].forEach((f, i) => this._tone(f, 0.25, 'triangle', 0.3, null, i * 0.09)); }
   // v2.1 — emote blip (two-tone, playful).
   emote() { this._tone(700, 0.08, 'square', 0.22, 990); this._tone(990, 0.1, 'square', 0.2, 660, 0.08); }
+  // v3 — fall into the abyss: long descending slide + deep thud.
+  fall() { this._tone(600, 0.9, 'sawtooth', 0.3, 60); this._noise(0.5, 0.5, 300, 0.85); this._tone(70, 0.4, 'sine', 0.6, 30, 0.85); }
   fullpower() { this._noise(0.5, 0.6, 900); this._tone(110, 0.4, 'sawtooth', 0.35, 440); this._tone(880, 0.2, 'sine', 0.25, 1760, 0.1); }
   ultimate() { [392, 523, 659, 784, 1046].forEach((f, i) => this._tone(f, 0.3, 'sawtooth', 0.25, null, i * 0.09)); this._noise(1.2, 0.5, 400, 0.1); }
   victory() { [523, 659, 784, 1046, 1318].forEach((f, i) => this._tone(f, 0.35, 'triangle', 0.35, null, i * 0.12)); }

@@ -1,5 +1,5 @@
 // ARCANE DUEL — game state machine, combat, skills, ultimates, AI, combos.
-import { W, H, GRAVITY, TURN_TIME, MAX_HP, HEROES, WEAPONS, WEAPON_ORDER, ARENAS, ARENA_ORDER, DIFFICULTY, MOVE_STEPS, MOVE_SPEED, TELEPORT_RANGE, TELEPORT_COST, TRAP_COST, TRAP_TURNS, TRAP_RADIUS, HEAL_COST, HEAL_AMOUNT, FULL_POWER, ELITE_HP, ELITE_DMG_MUL, clamp, rng } from './config.js';
+import { W, WORLD_W, H, GRAVITY, TURN_TIME, MAX_HP, HEROES, WEAPONS, WEAPON_ORDER, ARENAS, ARENA_ORDER, DIFFICULTY, MOVE_STEPS, MOVE_SPEED, TELEPORT_RANGE, TELEPORT_COST, TRAP_COST, TRAP_TURNS, TRAP_RADIUS, HEAL_COST, HEAL_AMOUNT, FULL_POWER, POWER_VEL, FULL_POWER_MOVES, SHOP_PRICES, FREE_WEAPONS, WIN_CREDITS, AI_SHOP_OWNED, ELITE_HP, ELITE_DMG_MUL, clamp, rng } from './config.js';
 import { Terrain, simulateShot, solveShot } from './engine.js';
 
 const SPRITE_W = 120, SPRITE_H = 150;
@@ -21,6 +21,13 @@ export class Game {
     this.aiTelegraph = null; this.aiTelegraphSeen = false; this.aiUtils = 0;
     // v2.1: emote bubble above the active hero (visual only).
     this.emoteBubble = null;
+    // v3: wider-world camera, trajectory-preview toggle, hold-to-charge.
+    this.camX = 0; this.showPreview = true; this.charging = false; this.chargeT = 0;
+    this.fellDeath = false; // v3 — set when a hero falls into the abyss
+    this.touchMode = false;
+    // v3: weapon shop — owned set persists in localStorage.
+    this.owned = new Set();
+    try { const v = JSON.parse(localStorage.getItem('arcane-duel-shop-owned') || '[]'); if (Array.isArray(v)) this.owned = new Set(v); } catch (e) { /* ignore */ }
     // Facebook-era flavour, original implementation: Duel Coins persist
     // across sessions; crates/barrels drop into the arena every few turns.
     this.crates = [];
@@ -35,12 +42,27 @@ export class Game {
   resetMeta() {
     this.terrain = null; this.players = []; this.projectiles = []; this.pending = [];
     this.turn = 0; this.phase = 'aim'; this.phaseT = 0; this.turnTimer = TURN_TIME;
-    this.wind = 0; this.aim = { angle: 55, power: 620 }; this.selectedWeapon = 'cannon';
+    this.wind = 0; this.aim = { angle: 55, power: 65 }; this.selectedWeapon = 'cannon';
     this.campaignIndex = 0; this.campaignHero = null; this.campaignDiff = null;
     this.trainingTip = 0; this.winner = null; this.crates = []; this.battleCoins = 0;
     this.traps = []; this.teleportMode = false; this.moveDir = 0;
     this.aiTelegraph = null; this.aiUtils = 0;
     this.emoteBubble = null; // v2.1
+    this.camX = 0; this.charging = false; this.chargeT = 0; // v3
+    this.fellDeath = false; // v3 — reset per battle
+  }
+
+  // ------------------------------------------------------------ v3: weapon shop
+  ownsWeapon(id) { return FREE_WEAPONS.includes(id) || this.owned.has(id); }
+  _saveOwned() { try { localStorage.setItem('arcane-duel-shop-owned', JSON.stringify([...this.owned])); } catch (e) { /* ignore */ } }
+  buyWeapon(id) {
+    const price = SHOP_PRICES[id];
+    if (!price || this.ownsWeapon(id)) return false;
+    if (this.coins < price) return false;
+    this.coins -= price; this.owned.add(id); this._saveOwned();
+    try { localStorage.setItem('arcane-duel-coins', String(this.coins)); } catch (e) { /* ignore */ }
+    this.audio.skill();
+    return true;
   }
 
   // ------------------------------------------------------------ setup
@@ -49,14 +71,16 @@ export class Game {
     this.resetMeta();
     this.mode = opts.mode; this.state = 'combat';
     this.campaignIndex = opts.campaignIndex ?? 0;
-    this.campaignTotal = opts.campaignTotal || 4; // v2.1: VS header counts battles left
+    this.campaignTotal = opts.campaignTotal || 6; // v3: 6 campaign battles
     const seed = (opts.seed ?? Math.floor(Math.random() * 1e9)) >>> 0;
     this.terrain = new Terrain(opts.arena, seed);
     this.arenaId = opts.arena;
-    this.players = [this._makePlayer(opts.p1Hero, 220, 1, false, 'Player 1'),
-      this._makePlayer(opts.p2Hero, 1060, -1, opts.p2AI || false, opts.p2AI ? (opts.p2AI === 'dummy' ? 'Training Dummy' : (opts.elite ? 'Elite Opponent' : 'AI Opponent')) : 'Player 2')];
-    this.players[0].y = this.terrain.groundY(220);
-    this.players[1].y = this.terrain.groundY(1060);
+    // v3 — wider world: heroes spawn at 480 and 1568 (1088 px apart, inside max range ~1290 px so turn-1 shots can reach).
+    const aiShop = opts.p2AI ? (AI_SHOP_OWNED[opts.p2AI] || []) : [];
+    this.players = [this._makePlayer(opts.p1Hero, 480, 1, false, 'Player 1'),
+      this._makePlayer(opts.p2Hero, 1568, -1, opts.p2AI || false, opts.p2AI ? (opts.p2AI === 'dummy' ? 'Training Dummy' : (opts.elite ? 'Elite Opponent' : 'AI Opponent')) : 'Player 2', aiShop)];
+    this.players[0].y = this.terrain.groundY(480);
+    this.players[1].y = this.terrain.groundY(1568);
     // v2 — elite final boss: 150 HP, harder hits, sharper aim (see DIFFICULTY.elite).
     if (opts.elite) {
       const b = this.players[1];
@@ -64,18 +88,27 @@ export class Game {
       this.campaignDiff = 'elite';
     }
     this.wind = this._rollWind(seed);
-    this.aim = { angle: 55, power: 620 };
+    this.aim = { angle: 55, power: 65 };
     this.phase = 'aim'; this.phaseT = 0; this.turnTimer = TURN_TIME;
     this.turn = 0; this.players[0].energy = 30; this.players[1].energy = 30;
+    this.camX = 0; // v3 — camera starts at the left edge (P1's side)
     this.setBanner(this.mode === 'training' ? 'TRAINING' : `${ARENAS[opts.arena].name.toUpperCase()}`, this._turnText(), 2.2);
     if (opts.elite) this.setBanner('⚔ FINAL ROUND — ELITE ENEMY!', 'Elite Bront: 150 HP, harder hits, sharper aim!', 3.2, '#ff5a4e');
     this.audio.ensure(); this.audio.turn();
     if (this.ui.onTurn) this.ui.onTurn(this.turn);
   }
-  _makePlayer(heroId, x, facing, ai, name) {
+  _makePlayer(heroId, x, facing, ai, name, aiShop = []) {
     const h = HEROES[heroId];
-    const ammo = {}; for (const w of WEAPON_ORDER) ammo[w] = WEAPONS[w].ammo;
-    return { hero: h, x, y: 0, vy: 0, falling: false, fallStart: 0, hp: MAX_HP, maxHp: MAX_HP, elite: false,
+    // v3 — ammo respects the shop: locked weapons start with 0 ammo.
+    // AI opponents get their difficulty's shop set; humans use the shop.
+    const ammo = {};
+    for (const w of WEAPON_ORDER) {
+      const owned = ai ? (FREE_WEAPONS.includes(w) || aiShop.includes(w)) : this.ownsWeapon(w);
+      ammo[w] = owned ? WEAPONS[w].ammo : 0;
+    }
+    // The hero's signature weapon is always available (even for monsters).
+    ammo[h.basic.id] = Infinity;
+    return { hero: h, x, y: 0, vy: 0, falling: false, fallStart: 0, hp: h.hp || MAX_HP, maxHp: h.hp || MAX_HP, elite: false,
       energy: 30, shield: 0, facing, ai, name, pose: 'idle', poseT: 0, ammo, cds: {}, alive: true,
       moveSteps: MOVE_STEPS };
   }
@@ -112,18 +145,35 @@ export class Game {
   }
   // VS header counter: campaign = battles left (incl. current), versus = 1 rival.
   remainingLabel() {
-    if (this.mode === 'campaign') return `Musuh tersisa: ${Math.max(0, (this.campaignTotal || 4) - this.campaignIndex)}`;
+    if (this.mode === 'campaign') return `Musuh tersisa: ${Math.max(0, (this.campaignTotal || 6) - this.campaignIndex)}`;
     if (this.mode === 'training') return '🎯 Latihan — dummy';
     return '⚔ Duel 1 lawan 1';
   }
 
   // ------------------------------------------------------------ aiming / firing
+  // v3 — angle 0–180°, power 0–100 (user spec). Power converts to initial
+  // speed at fire time: v = power × 9.5 × weapon.speed.
   setAim(angle, power) {
     // clamp(NaN) is NaN — a poisoned aim used to kill the game loop (Nov 2026).
-    if (Number.isFinite(angle)) this.aim.angle = clamp(angle, 8, 172);
-    if (Number.isFinite(power)) this.aim.power = clamp(power, 150, 950);
+    if (Number.isFinite(angle)) this.aim.angle = clamp(angle, 0, 180);
+    if (Number.isFinite(power)) this.aim.power = clamp(power, 0, 100);
   }
   nudgeAim(dAngle, dPower) { this.setAim(this.aim.angle + dAngle, this.aim.power + dPower); }
+  togglePreview() { this.showPreview = !this.showPreview; return this.showPreview; }
+  // v3 — hold-to-charge: hold Space to charge power up toward 100, release
+  // to fire. A quick tap fires immediately with the current power.
+  startCharge() {
+    if (this.state !== 'combat' || this.phase !== 'aim' || this.active().ai) return false;
+    this.charging = true; this.chargeT = 0;
+    return true;
+  }
+  releaseCharge() {
+    if (!this.charging) return false;
+    this.charging = false;
+    if (this.state !== 'combat' || this.phase !== 'aim' || this.active().ai) return false;
+    this.teleportMode = false;
+    return this._fireWeapon(this.selectedWeapon);
+  }
   // v2 — walk left/right (A/D hold). Limited steps per turn, Worms-style.
   // Called every frame by input.js while a move key is held, and by the AI.
   moveStep(dir, dt) {
@@ -132,7 +182,7 @@ export class Game {
     if (!p.alive || p.falling) return false;
     if (p.moveSteps <= 0) return false;
     const step = MOVE_SPEED * dt;
-    const nx = clamp(p.x + dir * step, 40, W - 40);
+    const nx = clamp(p.x + dir * step, 40, WORLD_W - 40);
     const moved = Math.abs(nx - p.x);
     if (moved < 0.01) return false;
     p.x = nx; p.facing = dir; p.moveSteps = Math.max(0, p.moveSteps - moved);
@@ -143,8 +193,18 @@ export class Game {
     const p = this.active(), m = this._muzzle(p);
     const dx = (mx - m.x) * p.facing, dy = -(my - m.y);
     if (Math.hypot(dx, dy) < 20) return;
-    const ang = clamp(Math.atan2(dy, Math.max(1, dx)) * 180 / Math.PI, 8, 172);
-    const pw = clamp(150 + Math.hypot(mx - m.x, my - m.y) * 0.9, 150, 950);
+    const ang = clamp(Math.atan2(dy, Math.max(1, dx)) * 180 / Math.PI, 0, 180);
+    const pw = clamp(Math.hypot(mx - m.x, my - m.y) * 0.11, 5, 100);
+    this.setAim(ang, pw);
+  }
+  // v3 — touch drag aim: drag anywhere on the field; the drag vector from
+  // the muzzle sets angle + power (Perjuangan Semut style: pull to aim).
+  aimFromTouch(tx, ty) {
+    const p = this.active(), m = this._muzzle(p);
+    const dx = (tx - m.x) * p.facing, dy = -(ty - m.y);
+    if (Math.hypot(dx, dy) < 24) return;
+    const ang = clamp(Math.atan2(dy, Math.max(1, dx)) * 180 / Math.PI, 0, 180);
+    const pw = clamp(Math.hypot(tx - m.x, ty - m.y) * 0.11, 5, 100);
     this.setAim(ang, pw);
   }
   _muzzle(p) {
@@ -187,19 +247,47 @@ export class Game {
     }
     if (p.ammo[weaponId] !== Infinity) { if (p.ammo[weaponId] <= 0) return false; p.ammo[weaponId]--; }
     const m = this._muzzle(p);
-    const ang = this.worldAngle(), pw = this.aim.power * w.speed;
+    // v3 — power 0–100 converts to initial speed: v = power × 9.5 × weapon.speed.
+    const ang = this.worldAngle(), pw = this.aim.power * POWER_VEL * w.speed;
     p.pose = 'fire'; p.poseT = 0.4;
-    // v2 — FULL POWER: firing at max power (950) unleashes a bigger, golden
-    // shot: +50% damage, +30% blast radius. (Energy still gates ultimates.)
+    // v3 — FULL POWER: each weapon unleashes its OWN special move at power 100.
     const full = this.aim.power >= FULL_POWER;
-    if (full) {
-      this.setBanner('💥 FULL POWER!', `${p.hero.name} fires at maximum power!`, 1.6, '#ffd76a');
+    const fpMove = full ? FULL_POWER_MOVES[weaponId] : null;
+    if (full && fpMove) {
+      this.setBanner(`🔥 ${fpMove.name.toUpperCase()}!`, `${p.hero.name} unleashes ${fpMove.name} — ${fpMove.desc}`, 2.0, '#ffd76a');
       this.audio.fullpower();
     } else this.audio.shoot();
-    this._spawnProjectile({ x: m.x, y: m.y, angle: ang, power: pw, kind: w.kind, weapon: weaponId, owner: this.turn, elem: w.elem || null, trail: [], fullPower: full });
-    if (w.kind === 'triple') {
-      this._spawnProjectile({ x: m.x, y: m.y, angle: ang - 6, power: pw, kind: 'ball', weapon: weaponId, owner: this.turn, elem: null, trail: [], fullPower: full });
-      this._spawnProjectile({ x: m.x, y: m.y, angle: ang + 6, power: pw, kind: 'ball', weapon: weaponId, owner: this.turn, elem: null, trail: [], fullPower: full });
+    // v3 — recoil: the hero is knocked back opposite the shot + camera shake.
+    p.x = clamp(p.x - p.facing * 8, 40, WORLD_W - 40);
+    p.y = this.terrain.groundY(p.x);
+    this.shake = Math.max(this.shake, 4);
+    this._burst(m.x, m.y, '#ffd76a', 8);
+    const mkProj = (a, kindOverride) => ({
+      x: m.x, y: m.y, angle: a, power: pw, kind: kindOverride || w.kind,
+      weapon: weaponId, owner: this.turn, elem: w.elem || null, trail: [],
+      fullPower: full, fullPowerMove: fpMove,
+      weight: w.weight ?? 1, windRes: w.windRes ?? 0,
+    });
+    if (full && fpMove && fpMove.effect === 'swarm') {
+      // Swarm: N projectiles fan out from the muzzle instead of one shot.
+      for (let i = 0; i < fpMove.count; i++) {
+        const off = (i - (fpMove.count - 1) / 2) * fpMove.spread;
+        this._spawnProjectile(mkProj(ang + off, w.kind === 'triple' ? 'ball' : undefined));
+      }
+    } else {
+      this._spawnProjectile(mkProj(ang));
+      if (w.kind === 'triple' && !full) {
+        this._spawnProjectile(mkProj(ang - 6, 'ball'));
+        this._spawnProjectile(mkProj(ang + 6, 'ball'));
+      }
+      if (full && fpMove && fpMove.effect === 'rain') {
+        // Rain: extra projectiles fall on the foe after the main shot.
+        const foe = this.opponent();
+        const rainKind = fpMove.elem === 'fire' ? 'meteor' : fpMove.elem === 'arcane' ? 'starbolt' : fpMove.elem === 'earth' ? 'boulder' : 'cluster';
+        for (let i = 0; i < fpMove.count; i++) {
+          this.pending.push({ delay: 0.15 + i * 0.25, kind: rainKind, x: foe.x - 60 + i * 60, y: 40, owner: this.turn, fpMove });
+        }
+      }
     }
     this.phase = 'flying'; this.phaseT = 0;
     return true;
@@ -211,12 +299,15 @@ export class Game {
     const rad = pr.angle * Math.PI / 180;
     pr.vx = Math.cos(rad) * pr.power; pr.vy = -Math.sin(rad) * pr.power;
     pr.t = 0; pr.dead = false; pr.subSpawned = false; pr.lastX = pr.x; pr.lastY = pr.y;
+    pr.weight = pr.weight ?? 1; pr.windRes = pr.windRes ?? 0;
     this.projectiles.push(pr);
   }
 
-  // ------------------------------------------------------------ v2 utility skills
-  // Teleport / Trap / Heal are shared utilities: they cost energy + cooldown
-  // but do NOT end the turn, so the hero can still shoot afterwards.
+  // ------------------------------------------------------------ v3 utility skills
+  // v3 RULE CHANGE (replaces the v2 "free action" rule): Teleport and Heal
+  // each END the turn — use one and you cannot shoot that turn. The turn
+  // passes immediately after the skill resolves. Trap is unchanged: it
+  // does not end the turn (the user only named teleport + heal).
   teleportCost(p) { return p.hero.id === 'nyx' ? 20 : TELEPORT_COST; } // Nyx: signature teleport, cheaper
   utilityReady(p, kind) {
     const cost = kind === 'teleport' ? this.teleportCost(p) : kind === 'trap' ? TRAP_COST : HEAL_COST;
@@ -240,7 +331,7 @@ export class Game {
     if (!this.teleportMode) return false;
     const p = this.active();
     if (!this.utilityReady(p, 'teleport')) { this.teleportMode = false; return false; }
-    const cx = clamp(x, 40, W - 40);
+    const cx = clamp(x, 40, WORLD_W - 40);
     if (Math.abs(cx - p.x) > TELEPORT_RANGE) { this.setBanner('TOO FAR!', `Teleport range is ${TELEPORT_RANGE}px`, 1.4); return false; }
     const gy = this.terrain.groundY(cx);
     this._burst(p.x, p.y - 60, '#a06bff', 18);
@@ -250,13 +341,16 @@ export class Game {
     this._floater(p.x, p.y - 140, '✨ TELEPORT!', '#c9a7ff');
     this.teleportMode = false;
     this.audio.teleport();
+    // v3 — teleport ends the turn (no shooting afterwards).
+    this.setBanner('✨ TELEPORTED — TURN OVER', 'Teleport uses up the whole turn', 1.6, '#c9a7ff');
+    this._endShot(p);
     return true;
   }
   placeTrap() {
     if (this.state !== 'combat' || this.phase !== 'aim') return false;
     const p = this.active();
     if (!this.utilityReady(p, 'trap')) { this.setBanner('NOT READY', 'Trap needs 35 energy — or one is already set', 1.4); return false; }
-    const tx = clamp(p.x + p.facing * 120, 60, W - 60);
+    const tx = clamp(p.x + p.facing * 120, 60, WORLD_W - 60);
     this.traps.push({ x: tx, y: this.terrain.groundY(tx), owner: this.turn, turnsLeft: TRAP_TURNS });
     p.energy -= TRAP_COST; p.cds.trap = 3;
     this._burst(tx, this.terrain.groundY(tx) - 40, '#50dcf0', 14);
@@ -274,6 +368,8 @@ export class Game {
     this._floater(p.x, p.y - 140, `+${HEAL_AMOUNT} HP`, '#58d158');
     this.setBanner('💚 HEALED!', `${p.hero.name} recovers ${HEAL_AMOUNT} HP`, 1.5, '#58d158');
     this.audio.heal();
+    // v3 — heal ends the turn (no shooting afterwards).
+    this._endShot(p);
     return true;
   }
 
@@ -304,13 +400,13 @@ export class Game {
       for (let i = 0; i < 3; i++) this.pending.push({ delay: 0.15 + i * 0.22, kind: 'fireball', x: foe.x - 60 + i * 60, y: 40, owner: this.turn });
       this.phase = 'flying'; this.phaseT = 0;
     } else if (def.id === 'lunar') {
-      this._spawnProjectile({ x: m.x, y: m.y, angle: this.worldAngle(), power: this.aim.power, kind: 'arcane', weapon: 'lunar', owner: this.turn, elem: 'arcane', trail: [] });
+      this._spawnProjectile({ x: m.x, y: m.y, angle: this.worldAngle(), power: this.aim.power * POWER_VEL, kind: 'arcane', weapon: 'lunar', owner: this.turn, elem: 'arcane', trail: [], weight: 0.9, windRes: 0.3 });
       this.phase = 'flying'; this.phaseT = 0;
     } else if (def.id === 'astral') {
       for (let i = 0; i < 5; i++) this.pending.push({ delay: 0.1 + i * 0.18, kind: 'starbolt', x: foe.x - 120 + i * 60, y: 30, owner: this.turn });
       this.phase = 'flying'; this.phaseT = 0;
     } else if (def.id === 'crash') {
-      this._spawnProjectile({ x: m.x, y: m.y, angle: this.worldAngle(), power: this.aim.power * 1.1, kind: 'boulder', weapon: 'crash', owner: this.turn, elem: 'earth', trail: [] });
+      this._spawnProjectile({ x: m.x, y: m.y, angle: this.worldAngle(), power: this.aim.power * POWER_VEL * 1.1, kind: 'boulder', weapon: 'crash', owner: this.turn, elem: 'earth', trail: [], weight: 1.4, windRes: 0.7 });
       this.phase = 'flying'; this.phaseT = 0;
     } else if (def.id === 'wall') {
       const wx = p.x + p.facing * 130;
@@ -372,14 +468,14 @@ export class Game {
       this.setBanner('💨 GUST!', `The wind howls at strength ${Math.abs(this.wind)}!`, 1.6, '#7ec8f7');
     }
     this.turnTimer = TURN_TIME;
-    this.aim = { angle: 55, power: 620 };
-    this.selectedWeapon = p.hero.basic.id === 'cannon' ? 'cannon' : 'cannon';
+    this.aim = { angle: 55, power: 65 };
+    this.selectedWeapon = 'cannon';
     this.phase = 'aim'; this.phaseT = 0;
     this.stats.turns++;
     // Supply drop every 3rd turn: a crate (bonus ammo) or a barrel (explosive).
     if (this.stats.turns % 3 === 0 && this.crates.length < 2 && this.mode !== 'training') {
       const kind = Math.random() < 0.55 ? 'crate' : 'barrel';
-      const cx = 320 + Math.random() * 640;
+      const cx = 380 + Math.random() * 1288; // v3 — across the wider world
       this.crates.push({ x: cx, y: -30, vy: 0, kind, landed: false });
       this.setBanner(kind === 'crate' ? '📦 SUPPLY DROP!' : '💥 DANGER BARREL!', kind === 'crate' ? 'Shoot it open for bonus ammo!' : 'It explodes when hit!', 1.8, '#ffd76a');
     }
@@ -404,7 +500,7 @@ export class Game {
       'Skills need energy. The ultimate only works at FULL energy.',
       'Fire hitting a purple arcane zone triggers an ELEMENTAL COMBO!',
       'Hold A / D to walk — 150 steps per turn. Reposition before you shoot!',
-      'T teleports, R sets a reflect trap, H heals. Fire at POWER 950 for a FULL POWER shot!'][this.trainingTip];
+      'T teleports, R sets a reflect trap, H heals — teleport and heal END your turn, no shooting after! Fire at POWER 100 for a FULL POWER move!'][this.trainingTip];
   }
 
   // ------------------------------------------------------------ damage / explosion
@@ -445,13 +541,21 @@ export class Game {
       if (Math.hypot(c.x - x, (c.y) - y) < R + 34) {
         this.crates.splice(this.crates.indexOf(c), 1);
         if (c.kind === 'crate') {
-          const pool = ['triple', 'meteor', 'homing', 'pierce', 'cluster', 'beam', 'shield'].filter(id => WEAPONS[id].ammo !== Infinity);
-          const pick = pool[Math.floor(Math.random() * pool.length)];
-          const owner = this.players[ownerIdx];
-          if (owner) { owner.ammo[pick] = (owner.ammo[pick] || 0) + 1; }
-          this._floater(c.x, c.y - 30, `+1 ${WEAPONS[pick].name}!`, '#ffd76a');
-          this._burst(c.x, c.y - 10, '#ffd76a', 14);
-          this.addCoins(10);
+          // v3 — crates only restock weapons you own (locked shop weapons
+          // stay locked until bought).
+          const pool = ['triple', 'meteor', 'homing', 'pierce', 'cluster', 'beam', 'shield'].filter(id => WEAPONS[id].ammo !== Infinity && this.ownsWeapon(id));
+          if (!pool.length) { // nothing owned beyond free weapons: coins instead
+            this._floater(c.x, c.y - 30, '+15 🪙!', '#ffd76a');
+            this._burst(c.x, c.y - 10, '#ffd76a', 14);
+            this.addCoins(15);
+          } else {
+            const pick = pool[Math.floor(Math.random() * pool.length)];
+            const owner = this.players[ownerIdx];
+            if (owner) { owner.ammo[pick] = (owner.ammo[pick] || 0) + 1; }
+            this._floater(c.x, c.y - 30, `+1 ${WEAPONS[pick].name}!`, '#ffd76a');
+            this._burst(c.x, c.y - 10, '#ffd76a', 14);
+            this.addCoins(10);
+          }
         } else {
           this._burst(c.x, c.y - 10, '#ff5a1a', 20);
           this.explode(c.x, c.y - 10, { dmg: 25, radius: 62, elem: 'fire' }, ownerIdx, { noCrater: false });
@@ -519,12 +623,12 @@ export class Game {
     if (this.aiUtils < 2) {
       if (p.hp <= 45 && p.energy >= HEAL_COST && Math.random() < 0.5) return { kind: 'heal' };
       if (p.energy >= TRAP_COST && !this.traps.some(t => t.owner === this.turn) && Math.random() < 0.25) return { kind: 'trap' };
-      if (p.energy >= this.teleportCost(p) && (p.x < 140 || p.x > 1140) && Math.random() < 0.45) {
-        return { kind: 'teleport', x: 350 + Math.random() * 580 };
+      if (p.energy >= this.teleportCost(p) && (p.x < 300 || p.x > 1750) && Math.random() < 0.45) {
+        return { kind: 'teleport', x: 500 + Math.random() * 1000 };
       }
       // Reposition: walk toward the centre when hugging an edge.
-      if ((p.x < 160 || p.x > 1120) && Math.random() < 0.5) {
-        return { kind: 'move', dx: p.x < 640 ? 80 : -80 };
+      if ((p.x < 300 || p.x > 1750) && Math.random() < 0.5) {
+        return { kind: 'move', dx: p.x < 1024 ? 80 : -80 };
       }
     }
     if (p.energy >= 40 && Math.random() < diff.skillUse) return { kind: 'skill1' };
@@ -533,6 +637,15 @@ export class Game {
     // wasting a shot (kept rare — 4% — so it never looks passive).
     if (Math.random() < 0.04) return { kind: 'pass' };
     return { kind: 'shoot' };
+  }
+  // v3 — AI weapon pick: the hero's signature weapon by default; special
+  // weapons only if the AI "owns" them for its difficulty (shop set).
+  _aiPickWeapon(p) {
+    let wid = p.hero.basic.id;
+    const aiOwned = AI_SHOP_OWNED[this.campaignDiff || 'normal'] || [];
+    const specials = ['meteor', 'homing', 'cluster', 'triple'].filter(id => p.ammo[id] > 0 && (FREE_WEAPONS.includes(id) || aiOwned.includes(id)));
+    if (specials.length && Math.random() < 0.3) wid = specials[Math.floor(Math.random() * specials.length)];
+    return wid;
   }
   _execAiPlan(plan) {
     const p = this.active(), foe = this.opponent();
@@ -558,12 +671,10 @@ export class Game {
       this.aiUtils++; this.aiTelegraph = null; return;
     }
     // Shoot: pick a weapon, solve the ballistic, fire.
-    let wid = 'cannon';
-    const specials = ['meteor', 'homing', 'cluster', 'triple'].filter(id => p.ammo[id] > 0);
-    if (specials.length && Math.random() < 0.3) wid = specials[Math.floor(Math.random() * specials.length)];
+    const wid = plan.wid || this._aiPickWeapon(p);
     this.selectedWeapon = wid;
     // Reuse the aim solved during the telegraph (what the player saw).
-    const sol = plan.aim || solveShot({ x: p.x, y: p.y }, { x: foe.x, y: foe.y }, this.wind * 10, this.terrain, diff);
+    const sol = plan.aim || solveShot({ x: p.x, y: p.y }, { x: foe.x, y: foe.y }, this.wind * 10, this.terrain, diff, WEAPONS[wid]);
     this.setAim(sol.angle, sol.power);
     this._fireWeapon(wid);
   }
@@ -576,7 +687,8 @@ export class Game {
     this.players[1 - winnerIdx].pose = 'defeat';
     const won = this.mode === 'versus' ? true : winnerIdx === 0;
     if (won) this.audio.victory(); else this.audio.defeat();
-    if (winnerIdx === 0) this.addCoins(50); // victory bonus for the human side
+    // v3 — win credits: campaign +100, versus +50, training 0.
+    if (winnerIdx === 0) this.addCoins(WIN_CREDITS[this.mode] ?? 50);
     this.state = 'over';
     if (this.ui.onGameOver) this.ui.onGameOver({
       winnerIdx, won, mode: this.mode,
@@ -585,6 +697,20 @@ export class Game {
       winnerName: this.players[winnerIdx].name,
       winnerHero: this.players[winnerIdx].hero,
     });
+  }
+
+  // v3 — fall death: a hero whose ground was blasted clean through falls
+  // into the abyss and dies (no fall damage — death). Works for both sides.
+  _fallDeath(p) {
+    if (!p.alive) return;
+    p.alive = false; p.falling = false; p.pose = 'defeat';
+    this._floater(p.x, H - 180, 'FELL!', '#ff5a4e', 26);
+    this.setBanner('💀 FELL INTO THE ABYSS!', `${p.hero.name} fell through the shattered ground!`, 2.2, '#ff5a4e');
+    this.audio.fall();
+    this.fellDeath = true; // persistent flag (the banner is replaced by the game-over banner)
+    // Let the resolving delay play out (0.85s) so the FELL banner is readable
+    // before the game-over screen takes over.
+    if (this.phase === 'aim') { this.phase = 'resolving'; this.phaseT = 0; }
   }
 
   // ------------------------------------------------------------ update
@@ -600,12 +726,28 @@ export class Game {
     this.floaters = this.floaters.filter(f => f.t < f.dur);
     for (const p of this.players) { if (p.poseT > 0) { p.poseT -= dt; if (p.poseT <= 0 && p.alive) p.pose = this.phase === 'aim' && this.players[this.turn] === p ? 'aim' : 'idle'; } }
     if (this.state !== 'combat') return;
+    // v3 — camera: follow the active hero while aiming, the projectile
+    // while it flies, across the wider world. Smooth lerp, clamped.
+    {
+      const focusX = (this.phase === 'flying' && this.projectiles.length)
+        ? this.projectiles.reduce((s, pr) => s + pr.x, 0) / this.projectiles.length
+        : this.active().x;
+      const target = clamp(focusX - W / 2, 0, WORLD_W - W);
+      this.camX += (target - this.camX) * Math.min(1, dt * 5);
+      if (!Number.isFinite(this.camX)) this.camX = 0;
+    }
     // Falling heroes.
     for (const p of this.players) {
       if (!p.alive) continue;
       if (p.falling) {
         p.vy += GRAVITY * dt; p.y += p.vy * dt;
         const gy = this.terrain.groundY(p.x);
+        // v3 — fall death: if the ground was blasted clean through (no
+        // terrain column left), the hero keeps falling into the abyss.
+        if (gy >= H - 2) {
+          if (p.y > H + 80) this._fallDeath(p);
+          continue;
+        }
         if (p.y >= gy) {
           const drop = p.y - p.fallStart;
           p.y = gy; p.falling = false; p.vy = 0;
@@ -624,6 +766,17 @@ export class Game {
       this.turnTimer -= dt;
       if (this.turnTimer <= 0) { this.setBanner('TIME UP!', `${this.active().name} loses the turn`, 1.4); this.nextTurn(); return; }
       const p = this.active();
+      // v3 — hold-to-charge: while Space is held, power ramps toward 100.
+      if (this.charging && !p.ai) {
+        this.chargeT += dt;
+        this.aim.power = Math.min(FULL_POWER, this.aim.power + dt * 70);
+      }
+      // v3 — POW flames: at power 100 the hero burns with fire.
+      if (this.aim.power >= FULL_POWER && Math.random() < 0.6) {
+        this.particles.push({ x: p.x + (Math.random() - 0.5) * 90, y: p.y - 20 - Math.random() * 90,
+          vx: (Math.random() - 0.5) * 20, vy: -60 - Math.random() * 60, life: 0, max: 0.5 + Math.random() * 0.3,
+          color: Math.random() < 0.5 ? '#ff8c2f' : '#ffd76a', size: 3 + Math.random() * 5, grav: -120, kind: 'circle' });
+      }
       // v2 — walking: held A/D moves the active hero (input.js sets moveDir).
       if (this.moveDir !== 0 && !p.ai) this.moveStep(this.moveDir, dt);
       if (p.ai && p.ai !== 'dummy') {
@@ -637,8 +790,11 @@ export class Game {
             this.aiTelegraph = { t: 0, plan };
             this.aiTelegraphSeen = true;
             if (plan.kind === 'shoot' || plan.kind === 'skill1' || plan.kind === 'ult') {
+              // v3 — solve with the weapon the AI will actually fire.
+              const wid = plan.kind === 'shoot' ? this._aiPickWeapon(p) : p.hero.basic.id;
+              plan.wid = wid;
               const sol = plan.kind === 'shoot'
-                ? solveShot({ x: p.x, y: p.y }, { x: this.opponent().x, y: this.opponent().y }, this.wind * 10, this.terrain, diff)
+                ? solveShot({ x: p.x, y: p.y }, { x: this.opponent().x, y: this.opponent().y }, this.wind * 10, this.terrain, diff, WEAPONS[wid])
                 : null;
               if (sol) { plan.aim = sol; this.setAim(sol.angle, sol.power); }
               const m = this._muzzle(p);
@@ -676,7 +832,8 @@ export class Game {
       this.pending = this.pending.filter(pd => pd.delay > 0);
       for (const pd of ready) this._spawnPending(pd);
       // Move projectiles.
-      const windAcc = this.wind * 10 * 1.2;
+      // v3 — per-weapon physics: heavy shots fall faster, wind-resistant
+      // shots barely drift. Beam ignores gravity (weight 0) and wind.
       for (const pr of this.projectiles) {
         if (pr.dead) continue;
         pr.t += dt;
@@ -684,6 +841,7 @@ export class Game {
         // (e.g. a homing orb circling its target). It bursts in place.
         if (pr.t > 5) { this._resolveHit(pr, null, 'timeout'); continue; }
         const step = dt;
+        const windAcc = this.wind * 10 * 1.2 * (1 - (pr.windRes ?? 0));
         pr.vx += windAcc * step;
         if (pr.kind === 'homing') {
           const foe = this.players[1 - pr.owner];
@@ -692,7 +850,7 @@ export class Game {
           pr.vx += ((tx / d) * sp - pr.vx) * turn;
           pr.vy += ((ty / d) * sp - pr.vy) * turn;
         }
-        if (pr.kind !== 'beam') pr.vy += GRAVITY * step;
+        if (pr.kind !== 'beam') pr.vy += GRAVITY * (pr.weight ?? 1) * step;
         pr.x += pr.vx * step; pr.y += pr.vy * step;
         pr.trail.push([pr.x, pr.y]); if (pr.trail.length > 18) pr.trail.shift();
         // Trail sparkles.
@@ -727,7 +885,7 @@ export class Game {
           if (dx * dx + dy * dy < 36 * 36) { this._resolveHit(pr, tgt, 'char'); break; }
         }
         if (pr.dead) continue;
-        if (pr.x < -60 || pr.x > W + 60 || pr.y > H + 60) { pr.dead = true; continue; }
+        if (pr.x < -60 || pr.x > WORLD_W + 60 || pr.y > H + 60) { pr.dead = true; continue; }
         if (pr.kind === 'pierce') {
           if (pr.y >= this.terrain.groundY(pr.x) + 30 || pr.t > 1.3) this._resolveHit(pr, null, 'terrain');
         } else if (pr.y >= this.terrain.groundY(pr.x)) {
@@ -755,7 +913,8 @@ export class Game {
   _spawnPending(pd) {
     const foe = this.players[1 - pd.owner];
     const mk = (kind, x, y, vx, vy, weapon, elem) => {
-      const pr = { x, y, vx, vy, angle: 0, power: 0, kind, weapon, owner: pd.owner, elem: elem || null, t: 0, dead: false, trail: [], subSpawned: false };
+      const pr = { x, y, vx, vy, angle: 0, power: 0, kind, weapon, owner: pd.owner, elem: elem || null, t: 0, dead: false, trail: [], subSpawned: false, weight: 1, windRes: 0 };
+      if (pd.fpMove) { pr.fullPowerMove = pd.fpMove; pr.fullPower = true; }
       this.projectiles.push(pr);
     };
     if (pd.kind === 'meteor' || pd.kind === 'bigbomb') {
@@ -765,6 +924,9 @@ export class Game {
       pr.vx = 0; pr.vy = 60; pr.meteorBig = big;
     } else if (pd.kind === 'fireball') {
       mk('ball', pd.x, pd.y, (Math.random() - 0.5) * 40, 50, 'meteor', 'fire');
+    } else if (pd.kind === 'cluster') {
+      // v3 — FULL POWER Cluster Storm: clusters fall and split into bomblets.
+      mk('cluster', pd.x, pd.y, (Math.random() - 0.5) * 30, 50, 'cluster', null);
     } else if (pd.kind === 'starbolt' || pd.kind === 'arcane') {
       mk('arcane', pd.x, pd.y, (Math.random() - 0.5) * 30, 55, pd.kind === 'arcane' ? 'celestial' : 'astral', 'arcane');
       const pr = this.projectiles[this.projectiles.length - 1];
@@ -796,29 +958,45 @@ export class Game {
     if (pr.kind === 'bomblet') { def.dmg = 13; def.radius = 36; }
     if (pr.kind === 'boulder') { def.dmg = 55; def.radius = 80; }
     if (pr.kind === 'arcane') { def.dmg = pr.arcaneBig ? 42 : 16; def.radius = pr.arcaneBig ? 70 : 40; }
-    // v2 — Full Power shot: +50% damage, +30% blast radius.
-    if (pr.fullPower) { def.dmg = Math.round(def.dmg * 1.5); def.radius = Math.round(def.radius * 1.3); }
+    // v3 — FULL POWER move: each weapon's own special stats replace the base.
+    const fpMove = pr.fullPowerMove || (pr.fpMove ?? null);
+    if (fpMove) {
+      def.dmg = fpMove.dmg; def.radius = fpMove.radius;
+      if (fpMove.elem) def.elem = fpMove.elem;
+    }
     if (how === 'char' && target) {
       // Direct hit: full damage at the target point, plus blast.
       this.explode(pr.x, pr.y, { dmg: def.dmg, radius: def.radius, elem: def.elem }, pr.owner);
+      // v3 — quake moves shatter the ground where they land.
+      if (fpMove && fpMove.effect === 'quake') {
+        this.terrain.crater(pr.x, this.terrain.groundY(pr.x), def.radius * 1.2);
+        this.shake = Math.max(this.shake, 16);
+      }
     } else {
       // v2.1: a blast that hurts nobody shows a floating MISS.
       const hpBefore = this.players.map(p => p.hp);
       const shBefore = this.players.map(p => p.shield);
       this.explode(pr.x, pr.y, def, pr.owner, { noCrater: pr.kind === 'beam' });
+      if (fpMove && fpMove.effect === 'quake') {
+        this.terrain.crater(pr.x, this.terrain.groundY(pr.x), def.radius * 1.2);
+        this.shake = Math.max(this.shake, 16);
+      }
       const hurtAnyone = this.players.some((p, i) => p.hp < hpBefore[i] || p.shield < shBefore[i]);
       if (!hurtAnyone) this._floater(pr.x, pr.y - 40, 'MISS', '#d8d8d8', 18);
     }
   }
 
   // Trajectory preview for the current aim (dots until terrain/char).
+  // v3 — simulates with the selected weapon's own weight + wind resistance,
+  // so the preview matches the real shot. Toggle with V (default ON).
   previewPoints() {
-    if (this.state !== 'combat' || this.phase !== 'aim') return [];
+    if (this.state !== 'combat' || this.phase !== 'aim' || !this.showPreview) return [];
     const p = this.active();
     const m = this._muzzle(p);
     const w = WEAPONS[this.selectedWeapon];
-    const sim = simulateShot(m.x, m.y, this.worldAngle(), this.aim.power * (w ? w.speed : 1), this.wind * 10,
-      { terrain: this.terrain, chars: this.players.filter(pl => pl.alive).map(pl => ({ x: pl.x, y: pl.y, r: 34 })) });
+    const sim = simulateShot(m.x, m.y, this.worldAngle(), this.aim.power * POWER_VEL * (w ? w.speed : 1), this.wind * 10,
+      { terrain: this.terrain, chars: this.players.filter(pl => pl.alive).map(pl => ({ x: pl.x, y: pl.y, r: 34 })),
+        gravityMul: w ? (w.weight ?? 1) : 1, windMul: w ? (1 - (w.windRes ?? 0)) : 1 });
     return sim.points.filter((_, i) => i % 3 === 0).slice(0, 26);
   }
 }

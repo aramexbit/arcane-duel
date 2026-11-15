@@ -3,13 +3,16 @@ import { Game } from './game.js';
 import { Renderer, loadAssets } from './render.js';
 import { Input } from './input.js';
 import { AudioSys } from './audio.js';
-import { HEROES, ARENAS, ARENA_ORDER, DIFFICULTY } from './config.js';
+import { HEROES, ARENAS, ARENA_ORDER, DIFFICULTY, WEAPONS, WEAPON_ORDER, SHOP_PRICES, FREE_WEAPONS } from './config.js';
 
 const CAMPAIGN = [
-  { ai: 'kairo', diff: 'easy', arena: 'valley' },
+  // v3 — 6 battles: the Mist Forest monsters join the roster (Perjuangan
+  // Semut-inspired). The final boss is still Elite Bront.
+  { ai: 'kumbang', diff: 'easy', arena: 'valley' },
   { ai: 'nyx', diff: 'normal', arena: 'canyon' },
-  { ai: 'bront', diff: 'hard', arena: 'temple' },
-  // v2 — FINAL BOSS: after the last round, an elite enemy awaits.
+  { ai: 'tawon', diff: 'normal', arena: 'temple' },
+  { ai: 'momok', diff: 'hard', arena: 'valley' },
+  { ai: 'bront', diff: 'hard', arena: 'canyon' },
   { ai: 'bront', diff: 'elite', arena: 'temple', elite: true },
 ];
 window.__CAMPAIGN = CAMPAIGN;
@@ -20,10 +23,11 @@ const audio = new AudioSys();
 const game = new Game(audio);
 const renderer = new Renderer(ctx);
 window.__game = game;
+window.__renderer = renderer; // v3 — probe reads uiRegions (POW FIRE button etc.)
 window.__shotReady = false;
 
 const $ = id => document.getElementById(id);
-const overlays = ['ov-menu', 'ov-select', 'ov-pause', 'ov-over', 'ov-settings', 'ov-credits', 'ov-howto'];
+const overlays = ['ov-menu', 'ov-select', 'ov-pause', 'ov-over', 'ov-settings', 'ov-credits', 'ov-howto', 'ov-shop'];
 function show(id) {
   for (const o of overlays) $(o).classList.toggle('hidden', o !== id);
   if (!id) for (const o of overlays) $(o).classList.add('hidden');
@@ -41,7 +45,7 @@ function renderSelect() {
   $('sel-title').textContent = sel.mode === 'versus'
     ? (sel.step === 1 ? 'Player 1 — Choose Your Warrior' : 'Player 2 — Choose Your Warrior')
     : 'Choose Your Warrior';
-  for (const id of Object.keys(HEROES)) {
+  for (const id of Object.keys(HEROES).filter(h => !HEROES[h].enemyOnly)) { // v3 — monsters are enemies only
     const h = HEROES[id];
     const el = document.createElement('div');
     el.className = 'card' + (sel[stepHero] === id ? ' sel' : '');
@@ -105,6 +109,39 @@ $('sel-start').onclick = () => {
 };
 $('sel-back').onclick = () => { audio.click(); show('ov-menu'); };
 
+// ------------------------------------------------------------ v3: weapon shop
+function renderShop() {
+  $('shop-coins').textContent = `🪙 ${game.coins} Duel Coins — win battles to earn more (Campaign +100, Versus +50)`;
+  const list = $('shop-list');
+  list.innerHTML = '';
+  for (const id of WEAPON_ORDER) {
+    const w = WEAPONS[id];
+    const owned = game.ownsWeapon(id);
+    const price = SHOP_PRICES[id];
+    const row = document.createElement('div');
+    row.className = 'pickrow';
+    row.style.cssText = 'justify-content:space-between;align-items:center;background:rgba(255,255,255,0.06);border-radius:10px;padding:8px 12px;margin:6px 0;text-align:left;';
+    const left = document.createElement('div');
+    left.innerHTML = `<b>${w.name}</b> <span style="color:#bbb;font-size:13px">${w.desc}</span>`;
+    if (owned && price) left.innerHTML += ' <span style="color:#58d158">✓ OWNED</span>';
+    if (!price) left.innerHTML += ' <span style="color:#58d158">✓ FREE</span>';
+    row.appendChild(left);
+    const btn = document.createElement('button');
+    btn.className = 'pick' + (owned ? '' : ' sel');
+    btn.textContent = owned ? 'Owned' : `Buy — ${price} 🪙`;
+    btn.disabled = owned || game.coins < price;
+    btn.style.opacity = btn.disabled ? 0.55 : 1;
+    btn.onclick = () => { audio.ensure(); if (game.buyWeapon(id)) { audio.click(); renderShop(); } else { audio.click(); } };
+    row.appendChild(btn);
+    list.appendChild(row);
+  }
+  const note = document.createElement('div');
+  note.style.cssText = 'font-size:13px;color:#bbb;margin-top:8px;';
+  note.textContent = 'Bought weapons unlock for every battle. Locked weapons show 🔒 in the inventory and cannot be picked.';
+  list.appendChild(note);
+}
+$('shop-back').onclick = () => { audio.click(); show('ov-menu'); };
+
 // ------------------------------------------------------------ menu buttons
 document.querySelectorAll('#ov-menu [data-act]').forEach(b => {
   b.onclick = () => {
@@ -114,6 +151,7 @@ document.querySelectorAll('#ov-menu [data-act]').forEach(b => {
     else if (act === 'howto') show('ov-howto');
     else if (act === 'settings') { syncSettings(); show('ov-settings'); }
     else if (act === 'credits') show('ov-credits');
+    else if (act === 'shop') { renderShop(); show('ov-shop'); }
   };
 });
 $('howto-back').onclick = () => show('ov-menu');
@@ -165,6 +203,7 @@ $('over-next').onclick = () => {
 };
 $('over-again').onclick = () => { audio.click(); if (lastBattleOpts) launchBattle(lastBattleOpts); };
 $('over-menu').onclick = () => { audio.click(); toMenu(); };
+$('over-shop').onclick = () => { audio.click(); renderShop(); show('ov-shop'); }; // v3 — shop between battles
 
 function toMenu() {
   game.state = 'menu';
@@ -174,6 +213,8 @@ function toMenu() {
 }
 
 // ------------------------------------------------------------ input + loop
+// v3 — touch mode: real touch devices get the big FIRE button + D-pad.
+game.touchMode = ('ontouchstart' in window) || (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0);
 new Input(canvas, game, renderer, togglePause);
 let last = performance.now();
 function loop(now) {
@@ -201,7 +242,7 @@ loadAssets().then(() => {
   else if (shot === 'combat') {
     game.campaignDiff = 'normal';
     launchBattle({ mode: 'versus', arena: 'canyon', p1Hero: 'kairo', p2Hero: 'nyx', p2AI: null, seed });
-    game.setAim(62, 700);
+    game.setAim(62, 100); // v3 — power 100 so the shot shows POW flames + the POW FIRE button
     // v2 staging: show a set reflect trap in the combat shot.
     game.players[0].energy = 100;
     game.placeTrap();
@@ -218,7 +259,7 @@ loadAssets().then(() => {
     launchBattle({ mode: 'versus', arena: 'temple', p1Hero: 'kairo', p2Hero: 'nyx', p2AI: null, seed });
     setTimeout(() => {
       game.players[1].hp = 1;
-      game._damagePlayer(1, 50, 1060, 400, 'fire');
+      game._damagePlayer(1, 50, 1568, 400, 'fire');
       setTimeout(() => { game.nextTurn(); window.__shotReady = true; }, 400);
     }, 400);
     requestAnimationFrame(loop);
