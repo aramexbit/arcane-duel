@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<title>ARCANE DUEL — Warriors of the Lost Realm</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0b0e1e; font-family: 'Trebuchet MS', Verdana, sans-serif; }
+  #wrap { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; }
+  #game { width: min(100vw, 177.78vh); height: min(100vh, 56.25vw); display: block; background: #1a2340; box-shadow: 0 0 60px rgba(0,0,0,0.6); }
+  #status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .ov { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; color: #fff; background: rgba(6,8,24,0.55); z-index: 5; }
+  .hidden { display: none !important; }
+  .panel { background: rgba(10,14,36,0.88); border: 2px solid #ffd76a; border-radius: 18px; padding: 28px 36px; max-width: 860px; box-shadow: 0 12px 50px rgba(0,0,0,0.6); }
+  h1 { font-size: 64px; margin: 0; letter-spacing: 4px; color: #ffd76a; text-shadow: 0 4px 0 #7a4a00, 0 8px 24px rgba(0,0,0,0.8); font-family: Georgia, serif; }
+  h2 { font-size: 30px; margin: 0 0 14px; color: #ffd76a; font-family: Georgia, serif; }
+  .sub { font-size: 17px; color: #d9b8ff; letter-spacing: 3px; margin: 6px 0 22px; }
+  .btn { display: block; width: 320px; margin: 8px auto; padding: 13px 20px; font-size: 18px; font-weight: bold; color: #1a1206; background: linear-gradient(#ffe08a, #ffb347); border: 2px solid #fff2c9; border-radius: 12px; cursor: pointer; font-family: inherit; }
+  .btn:hover { filter: brightness(1.12); transform: scale(1.02); }
+  .btn.ghost { background: rgba(255,255,255,0.12); color: #fff; border-color: rgba(255,255,255,0.5); }
+  .btn.small { width: auto; display: inline-block; padding: 9px 18px; font-size: 15px; margin: 6px; }
+  .cards { display: flex; gap: 16px; justify-content: center; margin: 10px 0 18px; }
+  .card { width: 200px; background: rgba(255,255,255,0.07); border: 3px solid rgba(255,255,255,0.25); border-radius: 14px; padding: 12px; cursor: pointer; }
+  .card:hover { transform: translateY(-3px); }
+  .card.sel { border-color: #ffd76a; background: rgba(255,215,106,0.18); box-shadow: 0 0 22px rgba(255,215,106,0.5); }
+  .card img { width: 120px; height: 150px; image-rendering: auto; }
+  .card h3 { margin: 6px 0 2px; font-size: 20px; }
+  .card .el { font-size: 13px; letter-spacing: 2px; color: #ffd76a; }
+  .card p { font-size: 13px; color: #ddd; margin: 6px 0; min-height: 54px; }
+  .pickrow { display: flex; gap: 10px; justify-content: center; margin: 8px 0; flex-wrap: wrap; }
+  .pick { padding: 9px 16px; border-radius: 10px; border: 2px solid rgba(255,255,255,0.35); background: rgba(255,255,255,0.08); color: #fff; cursor: pointer; font-weight: bold; font-family: inherit; }
+  .pick.sel { border-color: #ffd76a; background: rgba(255,215,106,0.25); }
+  .statline { font-size: 17px; margin: 5px 0; color: #eee; }
+  .howto { text-align: left; font-size: 15px; line-height: 1.65; color: #eee; max-width: 640px; }
+  .howto b { color: #ffd76a; }
+  label { font-size: 15px; display: block; margin: 10px 0; }
+  input[type=range] { width: 260px; }
+  .kbd { background: #222; border: 1px solid #888; border-radius: 5px; padding: 1px 7px; font-family: monospace; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="game" width="1280" height="720" aria-label="ARCANE DUEL: turn-based artillery fantasy duel"></canvas>
+  <p id="status" role="status" aria-live="polite"></p>
+
+  <div class="ov" id="ov-menu">
+    <h1>ARCANE DUEL</h1>
+    <div class="sub">— WARRIORS OF THE LOST REALM —</div>
+    <div class="panel" style="padding:18px 30px;">
+      <button class="btn" data-act="campaign">⚔️ Campaign</button>
+      <button class="btn" data-act="versus">👥 Local Multiplayer</button>
+      <button class="btn" data-act="training">🎯 Training</button>
+      <button class="btn ghost" data-act="howto">How to Play</button>
+      <button class="btn ghost" data-act="settings">Settings</button>
+      <button class="btn ghost" data-act="credits">Credits</button>
+    </div>
+    <div style="margin-top:14px;font-size:13px;color:#bbb;">Turn-based artillery fantasy • 2 players • Offline • An original game</div>
+    <div id="menu-coins" style="margin-top:8px;font-size:15px;color:#ffd76a;">🪙 0 Duel Coins</div>
+  </div>
+
+  <div class="ov hidden" id="ov-select">
+    <div class="panel">
+      <h2 id="sel-title">Choose Your Warrior</h2>
+      <div class="cards" id="sel-cards"></div>
+      <div id="sel-extra"></div>
+      <button class="btn" id="sel-start">Start Duel</button>
+      <button class="btn ghost small" id="sel-back">Back</button>
+    </div>
+  </div>
+
+  <div class="ov hidden" id="ov-pause">
+    <div class="panel">
+      <h2>Paused</h2>
+      <button class="btn" id="pause-resume">Resume</button>
+      <button class="btn ghost" id="pause-restart">Restart Battle</button>
+      <button class="btn ghost" id="pause-quit">Quit to Menu</button>
+    </div>
+  </div>
+
+  <div class="ov hidden" id="ov-over">
+    <div class="panel">
+      <h2 id="over-title">Victory!</h2>
+      <div id="over-stats"></div>
+      <button class="btn" id="over-next">Next Battle</button>
+      <button class="btn" id="over-again">Play Again</button>
+      <button class="btn ghost" id="over-menu">Main Menu</button>
+    </div>
+  </div>
+
+  <div class="ov hidden" id="ov-settings">
+    <div class="panel">
+      <h2>Settings</h2>
+      <label>🎵 Music volume <input type="range" id="set-music" min="0" max="1" step="0.05"></label>
+      <label>🔊 Sound effects <input type="range" id="set-sfx" min="0" max="1" step="0.05"></label>
+      <label><input type="checkbox" id="set-mute"> Mute all (M)</label>
+      <button class="btn" id="set-back">Back</button>
+    </div>
+  </div>
+
+  <div class="ov hidden" id="ov-credits">
+    <div class="panel">
+      <h2>Credits</h2>
+      <p class="statline">ARCANE DUEL: Warriors of the Lost Realm</p>
+      <p class="statline">An original game — characters, art, music and code created for the make.fun best-game-01 bounty.</p>
+      <p class="statline">Art: original procedural sprites drawn in code. Audio: Web Audio synthesis.</p>
+      <button class="btn" id="credits-back">Back</button>
+    </div>
+  </div>
+
+  <div class="ov hidden" id="ov-howto">
+    <div class="panel">
+      <h2>How to Play</h2>
+      <div class="howto">
+        <b>Goal:</b> Blast your rival to 0 HP before they blast you. Turns alternate.<br>
+        <b>Aim:</b> Move the mouse — the dotted line previews your shot. <span class="kbd">↑</span><span class="kbd">↓</span> angle, <span class="kbd">←</span><span class="kbd">→</span> power.<br>
+        <b>Fire:</b> <span class="kbd">Space</span> or click. <b>Weapons:</b> <span class="kbd">Q</span>/<span class="kbd">E</span> or click the inventory.<br>
+        <b>Skills:</b> <span class="kbd">1</span> <span class="kbd">2</span> use skills (cost energy), <span class="kbd">3</span> ultimate — only at FULL energy.<br>
+        <b>Wind:</b> shown at the top — it pushes every projectile. Wind changes every turn.<br>
+        <b>Terrain:</b> explosions carve craters. Heroes fall if their ground is destroyed.<br>
+        <b>Combo:</b> fire hitting a purple arcane zone triggers an ELEMENTAL COMBO blast!<br>
+        <b>Pause:</b> <span class="kbd">Esc</span> &nbsp; <b>Mute:</b> <span class="kbd">M</span>
+      </div>
+      <button class="btn" id="howto-back">Back</button>
+    </div>
+  </div>
+</div>
+<script type="module" src="./src/main.js"></script>
+</body>
+</html>
