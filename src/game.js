@@ -1,5 +1,5 @@
 // ARCANE DUEL — game state machine, combat, skills, ultimates, AI, combos.
-import { W, H, GRAVITY, TURN_TIME, MAX_HP, HEROES, WEAPONS, WEAPON_ORDER, ARENAS, ARENA_ORDER, DIFFICULTY, clamp, rng } from './config.js';
+import { W, H, GRAVITY, TURN_TIME, MAX_HP, HEROES, WEAPONS, WEAPON_ORDER, ARENAS, ARENA_ORDER, DIFFICULTY, MOVE_STEPS, MOVE_SPEED, TELEPORT_RANGE, TELEPORT_COST, TRAP_COST, TRAP_TURNS, TRAP_RADIUS, HEAL_COST, HEAL_AMOUNT, FULL_POWER, ELITE_HP, ELITE_DMG_MUL, clamp, rng } from './config.js';
 import { Terrain, simulateShot, solveShot } from './engine.js';
 
 const SPRITE_W = 120, SPRITE_H = 150;
@@ -16,6 +16,9 @@ export class Game {
     this.banner = null; this.shake = 0; this.cine = null;
     this.time = 0;
     this.stats = { turns: 0, damage: [0, 0], combos: 0 };
+    // v2: reflect traps, teleport targeting, AI telegraph, walk meter.
+    this.traps = []; this.teleportMode = false; this.moveDir = 0;
+    this.aiTelegraph = null; this.aiTelegraphSeen = false; this.aiUtils = 0;
     // Facebook-era flavour, original implementation: Duel Coins persist
     // across sessions; crates/barrels drop into the arena every few turns.
     this.crates = [];
@@ -33,6 +36,8 @@ export class Game {
     this.wind = 0; this.aim = { angle: 55, power: 620 }; this.selectedWeapon = 'cannon';
     this.campaignIndex = 0; this.campaignHero = null; this.campaignDiff = null;
     this.trainingTip = 0; this.winner = null; this.crates = []; this.battleCoins = 0;
+    this.traps = []; this.teleportMode = false; this.moveDir = 0;
+    this.aiTelegraph = null; this.aiUtils = 0;
   }
 
   // ------------------------------------------------------------ setup
@@ -45,22 +50,30 @@ export class Game {
     this.terrain = new Terrain(opts.arena, seed);
     this.arenaId = opts.arena;
     this.players = [this._makePlayer(opts.p1Hero, 220, 1, false, 'Player 1'),
-      this._makePlayer(opts.p2Hero, 1060, -1, opts.p2AI || false, opts.p2AI ? (opts.p2AI === 'dummy' ? 'Training Dummy' : 'AI Opponent') : 'Player 2')];
+      this._makePlayer(opts.p2Hero, 1060, -1, opts.p2AI || false, opts.p2AI ? (opts.p2AI === 'dummy' ? 'Training Dummy' : (opts.elite ? 'Elite Opponent' : 'AI Opponent')) : 'Player 2')];
     this.players[0].y = this.terrain.groundY(220);
     this.players[1].y = this.terrain.groundY(1060);
+    // v2 — elite final boss: 150 HP, harder hits, sharper aim (see DIFFICULTY.elite).
+    if (opts.elite) {
+      const b = this.players[1];
+      b.elite = true; b.maxHp = ELITE_HP; b.hp = ELITE_HP;
+      this.campaignDiff = 'elite';
+    }
     this.wind = this._rollWind(seed);
     this.aim = { angle: 55, power: 620 };
     this.phase = 'aim'; this.phaseT = 0; this.turnTimer = TURN_TIME;
     this.turn = 0; this.players[0].energy = 30; this.players[1].energy = 30;
     this.setBanner(this.mode === 'training' ? 'TRAINING' : `${ARENAS[opts.arena].name.toUpperCase()}`, this._turnText(), 2.2);
+    if (opts.elite) this.setBanner('⚔ FINAL ROUND — ELITE ENEMY!', 'Elite Bront: 150 HP, harder hits, sharper aim!', 3.2, '#ff5a4e');
     this.audio.ensure(); this.audio.turn();
     if (this.ui.onTurn) this.ui.onTurn(this.turn);
   }
   _makePlayer(heroId, x, facing, ai, name) {
     const h = HEROES[heroId];
     const ammo = {}; for (const w of WEAPON_ORDER) ammo[w] = WEAPONS[w].ammo;
-    return { hero: h, x, y: 0, vy: 0, falling: false, fallStart: 0, hp: MAX_HP, energy: 30,
-      shield: 0, facing, ai, name, pose: 'idle', poseT: 0, ammo, cds: {}, alive: true };
+    return { hero: h, x, y: 0, vy: 0, falling: false, fallStart: 0, hp: MAX_HP, maxHp: MAX_HP, elite: false,
+      energy: 30, shield: 0, facing, ai, name, pose: 'idle', poseT: 0, ammo, cds: {}, alive: true,
+      moveSteps: MOVE_STEPS };
   }
   _rollWind(seed) {
     const r = rng((seed ^ 0x9e3779b9) >>> 0);
@@ -73,10 +86,26 @@ export class Game {
 
   // ------------------------------------------------------------ aiming / firing
   setAim(angle, power) {
-    this.aim.angle = clamp(angle, 8, 172);
-    this.aim.power = clamp(power, 150, 950);
+    // clamp(NaN) is NaN — a poisoned aim used to kill the game loop (Nov 2026).
+    if (Number.isFinite(angle)) this.aim.angle = clamp(angle, 8, 172);
+    if (Number.isFinite(power)) this.aim.power = clamp(power, 150, 950);
   }
   nudgeAim(dAngle, dPower) { this.setAim(this.aim.angle + dAngle, this.aim.power + dPower); }
+  // v2 — walk left/right (A/D hold). Limited steps per turn, Worms-style.
+  // Called every frame by input.js while a move key is held, and by the AI.
+  moveStep(dir, dt) {
+    if (this.state !== 'combat' || this.phase !== 'aim') return false;
+    const p = this.active();
+    if (!p.alive || p.falling) return false;
+    if (p.moveSteps <= 0) return false;
+    const step = MOVE_SPEED * dt;
+    const nx = clamp(p.x + dir * step, 40, W - 40);
+    const moved = Math.abs(nx - p.x);
+    if (moved < 0.01) return false;
+    p.x = nx; p.facing = dir; p.moveSteps = Math.max(0, p.moveSteps - moved);
+    p.y = this.terrain.groundY(p.x);
+    return true;
+  }
   aimFromMouse(mx, my) {
     const p = this.active(), m = this._muzzle(p);
     const dx = (mx - m.x) * p.facing, dy = -(my - m.y);
@@ -109,6 +138,7 @@ export class Game {
     if (this.state !== 'combat' || this.phase !== 'aim') return false;
     const p = this.active();
     if (p.ai) return false;
+    this.teleportMode = false;
     return this._fireWeapon(this.selectedWeapon);
   }
   _fireWeapon(weaponId, skillDef = null) {
@@ -126,20 +156,92 @@ export class Game {
     const m = this._muzzle(p);
     const ang = this.worldAngle(), pw = this.aim.power * w.speed;
     p.pose = 'fire'; p.poseT = 0.4;
-    this.audio.shoot();
-    this._spawnProjectile({ x: m.x, y: m.y, angle: ang, power: pw, kind: w.kind, weapon: weaponId, owner: this.turn, elem: w.elem || null, trail: [] });
+    // v2 — FULL POWER: firing at max power (950) unleashes a bigger, golden
+    // shot: +50% damage, +30% blast radius. (Energy still gates ultimates.)
+    const full = this.aim.power >= FULL_POWER;
+    if (full) {
+      this.setBanner('💥 FULL POWER!', `${p.hero.name} fires at maximum power!`, 1.6, '#ffd76a');
+      this.audio.fullpower();
+    } else this.audio.shoot();
+    this._spawnProjectile({ x: m.x, y: m.y, angle: ang, power: pw, kind: w.kind, weapon: weaponId, owner: this.turn, elem: w.elem || null, trail: [], fullPower: full });
     if (w.kind === 'triple') {
-      this._spawnProjectile({ x: m.x, y: m.y, angle: ang - 6, power: pw, kind: 'ball', weapon: weaponId, owner: this.turn, elem: null, trail: [] });
-      this._spawnProjectile({ x: m.x, y: m.y, angle: ang + 6, power: pw, kind: 'ball', weapon: weaponId, owner: this.turn, elem: null, trail: [] });
+      this._spawnProjectile({ x: m.x, y: m.y, angle: ang - 6, power: pw, kind: 'ball', weapon: weaponId, owner: this.turn, elem: null, trail: [], fullPower: full });
+      this._spawnProjectile({ x: m.x, y: m.y, angle: ang + 6, power: pw, kind: 'ball', weapon: weaponId, owner: this.turn, elem: null, trail: [], fullPower: full });
     }
     this.phase = 'flying'; this.phaseT = 0;
     return true;
   }
   _spawnProjectile(pr) {
+    // A non-finite angle/power poisons velocity and used to kill the loop.
+    if (!Number.isFinite(pr.angle)) pr.angle = 55;
+    if (!Number.isFinite(pr.power)) pr.power = 600;
     const rad = pr.angle * Math.PI / 180;
     pr.vx = Math.cos(rad) * pr.power; pr.vy = -Math.sin(rad) * pr.power;
     pr.t = 0; pr.dead = false; pr.subSpawned = false; pr.lastX = pr.x; pr.lastY = pr.y;
     this.projectiles.push(pr);
+  }
+
+  // ------------------------------------------------------------ v2 utility skills
+  // Teleport / Trap / Heal are shared utilities: they cost energy + cooldown
+  // but do NOT end the turn, so the hero can still shoot afterwards.
+  teleportCost(p) { return p.hero.id === 'nyx' ? 20 : TELEPORT_COST; } // Nyx: signature teleport, cheaper
+  utilityReady(p, kind) {
+    const cost = kind === 'teleport' ? this.teleportCost(p) : kind === 'trap' ? TRAP_COST : HEAL_COST;
+    if (p.energy < cost) return false;
+    if ((p.cds[kind] || 0) > 0) return false;
+    if (kind === 'heal' && p.hp >= p.maxHp) return false;
+    if (kind === 'trap' && this.traps.some(t => t.owner === this.turn)) return false;
+    return true;
+  }
+  useTeleport() {
+    if (this.state !== 'combat' || this.phase !== 'aim') return false;
+    const p = this.active();
+    if (!this.utilityReady(p, 'teleport')) { this.setBanner('NOT READY', `Teleport needs ${this.teleportCost(p)} energy`, 1.4); return false; }
+    this.teleportMode = true;
+    this.setBanner('✨ TELEPORT', `Click a spot within ${TELEPORT_RANGE}px — Esc to cancel`, 2.5, '#c9a7ff');
+    this.audio.click();
+    return true;
+  }
+  cancelTeleport() { this.teleportMode = false; }
+  doTeleport(x, y) {
+    if (!this.teleportMode) return false;
+    const p = this.active();
+    if (!this.utilityReady(p, 'teleport')) { this.teleportMode = false; return false; }
+    const cx = clamp(x, 40, W - 40);
+    if (Math.abs(cx - p.x) > TELEPORT_RANGE) { this.setBanner('TOO FAR!', `Teleport range is ${TELEPORT_RANGE}px`, 1.4); return false; }
+    const gy = this.terrain.groundY(cx);
+    this._burst(p.x, p.y - 60, '#a06bff', 18);
+    p.energy -= this.teleportCost(p); p.cds.teleport = 3;
+    p.x = cx; p.y = gy; p.falling = false; p.vy = 0;
+    this._burst(p.x, p.y - 60, '#c9a7ff', 22);
+    this._floater(p.x, p.y - 140, '✨ TELEPORT!', '#c9a7ff');
+    this.teleportMode = false;
+    this.audio.teleport();
+    return true;
+  }
+  placeTrap() {
+    if (this.state !== 'combat' || this.phase !== 'aim') return false;
+    const p = this.active();
+    if (!this.utilityReady(p, 'trap')) { this.setBanner('NOT READY', 'Trap needs 35 energy — or one is already set', 1.4); return false; }
+    const tx = clamp(p.x + p.facing * 120, 60, W - 60);
+    this.traps.push({ x: tx, y: this.terrain.groundY(tx), owner: this.turn, turnsLeft: TRAP_TURNS });
+    p.energy -= TRAP_COST; p.cds.trap = 3;
+    this._burst(tx, this.terrain.groundY(tx) - 40, '#50dcf0', 14);
+    this.setBanner('🪞 REFLECT TRAP SET!', 'Enemy shots hitting it bounce back at them!', 1.8, '#50dcf0');
+    this.audio.skill();
+    return true;
+  }
+  useHeal() {
+    if (this.state !== 'combat' || this.phase !== 'aim') return false;
+    const p = this.active();
+    if (!this.utilityReady(p, 'heal')) { this.setBanner('NOT READY', p.hp >= p.maxHp ? 'Already at full HP!' : 'Heal needs 40 energy', 1.4); return false; }
+    p.energy -= HEAL_COST; p.cds.heal = 3;
+    p.hp = Math.min(p.maxHp, p.hp + HEAL_AMOUNT);
+    this._burst(p.x, p.y - 70, '#58d158', 20);
+    this._floater(p.x, p.y - 140, `+${HEAL_AMOUNT} HP`, '#58d158');
+    this.setBanner('💚 HEALED!', `${p.hero.name} recovers ${HEAL_AMOUNT} HP`, 1.5, '#58d158');
+    this.audio.heal();
+    return true;
   }
 
   // ------------------------------------------------------------ skills
@@ -152,6 +254,7 @@ export class Game {
   }
   useSkill(slot) {
     if (this.state !== 'combat' || this.phase !== 'aim') return false;
+    this.teleportMode = false;
     const p = this.active();
     if (!this.skillAvailable(p, slot)) { this.setBanner('NOT READY', slot === 3 ? 'Ultimate needs FULL energy!' : 'Not enough energy or cooling down', 1.4); return false; }
     const def = slot === 1 ? p.hero.skill1 : slot === 2 ? p.hero.skill2 : p.hero.ult;
@@ -222,7 +325,13 @@ export class Game {
     this.turn = 1 - this.turn;
     const p = this.active();
     p.energy = clamp(p.energy + 25, 0, 100);
+    p.moveSteps = MOVE_STEPS; // v2: walking refills every turn
+    this.teleportMode = false; this.moveDir = 0;
+    this.aiTelegraph = null; this.aiUtils = 0;
     for (const k of Object.keys(p.cds)) if (p.cds[k] > 0) p.cds[k]--;
+    // v2: traps age one turn each round.
+    for (const t of this.traps) t.turnsLeft--;
+    this.traps = this.traps.filter(t => t.turnsLeft > 0);
     this.wind = this._rollWind((Math.random() * 1e9) >>> 0);
     // Occasional wind gust: a dramatic, telegraphed weather swing.
     if (Math.random() < 0.12) {
@@ -260,7 +369,9 @@ export class Game {
       'Wind pushes every projectile — check the compass before you shoot!',
       'Q / E switch weapons. Number keys 1 / 2 / 3 use skills.',
       'Skills need energy. The ultimate only works at FULL energy.',
-      'Fire hitting a purple arcane zone triggers an ELEMENTAL COMBO!'][this.trainingTip];
+      'Fire hitting a purple arcane zone triggers an ELEMENTAL COMBO!',
+      'Hold A / D to walk — 150 steps per turn. Reposition before you shoot!',
+      'T teleports, R sets a reflect trap, H heals. Fire at POWER 950 for a FULL POWER shot!'][this.trainingTip];
   }
 
   // ------------------------------------------------------------ damage / explosion
@@ -270,6 +381,9 @@ export class Game {
     let dmg = Math.round(amount);
     const crit = Math.random() < 0.1;
     if (crit) dmg = Math.round(dmg * 1.5);
+    // v2: elite final boss hits 25% harder.
+    const attacker = this.players[this.turn];
+    if (attacker && attacker.elite && idx !== this.turn) dmg = Math.round(dmg * ELITE_DMG_MUL);
     if (p.shield > 0) { const blocked = Math.min(p.shield, dmg); p.shield -= blocked; dmg -= blocked; this._floater(p.x, p.y - 120, `-${blocked} SHIELD`, '#7ec8f7'); }
     if (dmg <= 0) { this._floater(p.x, p.y - 120, 'BLOCKED!', '#7ec8f7'); return 0; }
     p.hp = Math.max(0, p.hp - dmg);
@@ -278,7 +392,6 @@ export class Game {
     this.stats.damage[this.turn] += dmg;
     // Duel Coins: the attacker earns coins for damage dealt.
     if (idx !== this.turn) this.addCoins(Math.max(1, Math.floor(dmg / 5)));
-    const attacker = this.players[this.turn];
     if (attacker && idx !== this.turn) attacker.energy = clamp(attacker.energy + 8, 0, 100);
     if (p.hp <= 0) { p.alive = false; p.pose = 'defeat'; }
     this.audio.hit();
@@ -362,22 +475,57 @@ export class Game {
   setBanner(text, sub, dur = 2, color = '#ffd76a') { this.banner = { text, sub, t: 0, dur, color }; }
 
   // ------------------------------------------------------------ AI
-  _aiAct() {
+  // v2: the AI telegraphs its shot — it picks a plan, shows its aim line +
+  // muzzle flash for ~1s (so the enemy shot is visible coming), then fires.
+  // Plans: 'shoot' | 'skill1' | 'ult' | 'heal' | 'trap' | 'teleport' | 'move'.
+  _planAi() {
     const p = this.active(), foe = this.opponent();
     const diff = DIFFICULTY[this.campaignDiff || 'normal'];
-    // Ultimate when ready and foe is hurt, or skill when affordable.
-    if (p.energy >= 100 && Math.random() < 0.6) { this.useSkill(3); return; }
-    if (p.energy >= 40 && Math.random() < diff.skillUse) {
-      if (this.useSkill(1)) return;
+    if (p.energy >= 100 && Math.random() < 0.6) return { kind: 'ult' };
+    if (this.aiUtils < 2) {
+      if (p.hp <= 45 && p.energy >= HEAL_COST && Math.random() < 0.5) return { kind: 'heal' };
+      if (p.energy >= TRAP_COST && !this.traps.some(t => t.owner === this.turn) && Math.random() < 0.25) return { kind: 'trap' };
+      if (p.energy >= this.teleportCost(p) && (p.x < 140 || p.x > 1140) && Math.random() < 0.45) {
+        return { kind: 'teleport', x: 350 + Math.random() * 580 };
+      }
+      // Reposition: walk toward the centre when hugging an edge.
+      if ((p.x < 160 || p.x > 1120) && Math.random() < 0.5) {
+        return { kind: 'move', dx: p.x < 640 ? 80 : -80 };
+      }
     }
-    if (p.hp < 35 && p.ammo.shield > 0 && Math.random() < 0.5) { this._fireWeapon('shield'); return; }
-    // Pick a weapon: mostly the hero basic (cannon/moon/boulder all map to cannon physics),
-    // sometimes a special with ammo.
+    if (p.energy >= 40 && Math.random() < diff.skillUse) return { kind: 'skill1' };
+    if (p.hp < 35 && p.ammo.shield > 0 && Math.random() < 0.5) return { kind: 'shield' };
+    return { kind: 'shoot' };
+  }
+  _execAiPlan(plan) {
+    const p = this.active(), foe = this.opponent();
+    const diff = DIFFICULTY[this.campaignDiff || 'normal'];
+    if (plan.kind === 'ult') { this.useSkill(3); return; }
+    if (plan.kind === 'skill1') { if (this.useSkill(1)) return; }
+    if (plan.kind === 'shield') { this._fireWeapon('shield'); return; }
+    if (plan.kind === 'heal') { if (this.useHeal()) { this.aiUtils++; this.aiTelegraph = null; return; } }
+    if (plan.kind === 'trap') { if (this.placeTrap()) { this.aiUtils++; this.aiTelegraph = null; return; } }
+    if (plan.kind === 'teleport') {
+      if (this.useTeleport()) {
+        const tx = clamp(plan.x, p.x - TELEPORT_RANGE + 20, p.x + TELEPORT_RANGE - 20);
+        if (!this.doTeleport(tx, 0)) this.cancelTeleport();
+        this.aiUtils++; this.aiTelegraph = null; return;
+      }
+    }
+    if (plan.kind === 'move') {
+      // Slide toward a better spot (consumes walk steps, then re-plans).
+      const dir = plan.dx > 0 ? 1 : -1;
+      let left = Math.abs(plan.dx);
+      while (left > 0 && p.moveSteps > 0) { const moved = this.moveStep(dir, 0.5); if (!moved) break; left -= MOVE_SPEED * 0.5; }
+      this.aiUtils++; this.aiTelegraph = null; return;
+    }
+    // Shoot: pick a weapon, solve the ballistic, fire.
     let wid = 'cannon';
     const specials = ['meteor', 'homing', 'cluster', 'triple'].filter(id => p.ammo[id] > 0);
     if (specials.length && Math.random() < 0.3) wid = specials[Math.floor(Math.random() * specials.length)];
     this.selectedWeapon = wid;
-    const sol = solveShot({ x: p.x, y: p.y }, { x: foe.x, y: foe.y }, this.wind * 10, this.terrain, diff);
+    // Reuse the aim solved during the telegraph (what the player saw).
+    const sol = plan.aim || solveShot({ x: p.x, y: p.y }, { x: foe.x, y: foe.y }, this.wind * 10, this.terrain, diff);
     this.setAim(sol.angle, sol.power);
     this._fireWeapon(wid);
   }
@@ -436,10 +584,36 @@ export class Game {
       this.turnTimer -= dt;
       if (this.turnTimer <= 0) { this.setBanner('TIME UP!', `${this.active().name} loses the turn`, 1.4); this.nextTurn(); return; }
       const p = this.active();
+      // v2 — walking: held A/D moves the active hero (input.js sets moveDir).
+      if (this.moveDir !== 0 && !p.ai) this.moveStep(this.moveDir, dt);
       if (p.ai && p.ai !== 'dummy') {
-        this.phaseT += dt;
         const diff = DIFFICULTY[this.campaignDiff || 'normal'];
-        if (this.phaseT * 1000 > diff.react) this._aiAct();
+        if (!this.aiTelegraph) {
+          // v2 telegraph: plan the shot, show the aim line + muzzle flash
+          // for ~1s so the enemy shot is clearly visible coming.
+          this.phaseT += dt;
+          if (this.phaseT * 1000 > diff.react) {
+            const plan = this._planAi();
+            this.aiTelegraph = { t: 0, plan };
+            this.aiTelegraphSeen = true;
+            if (plan.kind === 'shoot' || plan.kind === 'skill1' || plan.kind === 'ult') {
+              const sol = plan.kind === 'shoot'
+                ? solveShot({ x: p.x, y: p.y }, { x: this.opponent().x, y: this.opponent().y }, this.wind * 10, this.terrain, diff)
+                : null;
+              if (sol) { plan.aim = sol; this.setAim(sol.angle, sol.power); }
+              const m = this._muzzle(p);
+              this._burst(m.x, m.y, '#ffd76a', 10);
+              this.setBanner('⚠ ENEMY AIMING…', `${p.hero.name} is lining up a shot!`, 1.1, '#ff9d5e');
+            }
+          }
+        } else {
+          this.aiTelegraph.t += dt;
+          if (this.aiTelegraph.t > 1.0) {
+            const plan = this.aiTelegraph.plan;
+            this.aiTelegraph = null; this.phaseT = 0;
+            this._execAiPlan(plan);
+          }
+        }
       }
     } else if (this.phase === 'cinematic') {
       this.phaseT += dt;
@@ -483,6 +657,27 @@ export class Game {
         pr.trail.push([pr.x, pr.y]); if (pr.trail.length > 18) pr.trail.shift();
         // Trail sparkles.
         if (Math.random() < 0.5) this.particles.push({ x: pr.x, y: pr.y, vx: (Math.random() - 0.5) * 30, vy: (Math.random() - 0.5) * 30, life: 0, max: 0.35, color: pr.kind === 'arcane' ? '#c9a7ff' : '#ffb347', size: 2.5, grav: 0, kind: 'circle' });
+        // v2 — reflect trap: an enemy projectile entering the field bounces
+        // back at its shooter (trap is consumed, projectile changes owner).
+        if (!pr.reflected) {
+          for (const trap of [...this.traps]) {
+            if (trap.owner === pr.owner) continue;
+            const dx = pr.x - trap.x, dy = pr.y - (trap.y - 40);
+            if (dx * dx + dy * dy < TRAP_RADIUS * TRAP_RADIUS) {
+              this.traps.splice(this.traps.indexOf(trap), 1);
+              this.reflectedCount = (this.reflectedCount || 0) + 1;
+              const shooter = this.players[pr.owner];
+              const tx = shooter.x - pr.x, ty = (shooter.y - 40) - pr.y, d = Math.hypot(tx, ty) || 1;
+              const sp = Math.max(420, Math.hypot(pr.vx, pr.vy));
+              pr.vx = (tx / d) * sp; pr.vy = (ty / d) * sp;
+              pr.owner = trap.owner; pr.reflected = true;
+              this._burst(trap.x, trap.y - 40, '#50dcf0', 22);
+              this.setBanner('🪞 REFLECTED!', 'The trap bounces the shot back!', 1.6, '#50dcf0');
+              this.audio.reflect();
+              break;
+            }
+          }
+        }
         // Character hit?
         const foe = this.players[1 - pr.owner];
         const own = this.players[pr.owner];
@@ -561,6 +756,8 @@ export class Game {
     if (pr.kind === 'bomblet') { def.dmg = 13; def.radius = 36; }
     if (pr.kind === 'boulder') { def.dmg = 55; def.radius = 80; }
     if (pr.kind === 'arcane') { def.dmg = pr.arcaneBig ? 42 : 16; def.radius = pr.arcaneBig ? 70 : 40; }
+    // v2 — Full Power shot: +50% damage, +30% blast radius.
+    if (pr.fullPower) { def.dmg = Math.round(def.dmg * 1.5); def.radius = Math.round(def.radius * 1.3); }
     if (how === 'char' && target) {
       // Direct hit: full damage at the target point, plus blast.
       this.explode(pr.x, pr.y, { dmg: def.dmg, radius: def.radius, elem: def.elem }, pr.owner);

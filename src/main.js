@@ -9,7 +9,10 @@ const CAMPAIGN = [
   { ai: 'kairo', diff: 'easy', arena: 'valley' },
   { ai: 'nyx', diff: 'normal', arena: 'canyon' },
   { ai: 'bront', diff: 'hard', arena: 'temple' },
+  // v2 — FINAL BOSS: after the last round, an elite enemy awaits.
+  { ai: 'bront', diff: 'elite', arena: 'temple', elite: true },
 ];
+window.__CAMPAIGN = CAMPAIGN;
 
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
@@ -144,8 +147,11 @@ game.ui.onGameOver = (r) => {
     `<p class="statline">Turns played: ${r.stats.turns} • Damage dealt: P1 ${r.stats.damage[0]} / P2 ${r.stats.damage[1]}</p>` +
     `<p class="statline">Elemental combos triggered: ${r.stats.combos}</p>` +
     `<p class="statline">🪙 Coins earned this battle: ${game.battleCoins} (total: ${game.coins})</p>` +
-    (r.mode === 'campaign' && r.won && !isCampaignFinal ? `<p class="statline">Battle ${r.campaignIndex + 1} of 3 cleared — the next foe is stronger!</p>` : '');
+    (r.mode === 'campaign' && r.won && !isCampaignFinal ? `<p class="statline">Battle ${r.campaignIndex + 1} of ${CAMPAIGN.length} cleared — the next foe is stronger!</p>` : '') +
+    (r.mode === 'campaign' && r.won && !isCampaignFinal && CAMPAIGN[r.campaignIndex + 1].elite ? `<p class="statline">⚔ Next: FINAL BOSS — Elite Bront, 150 HP!</p>` : '');
   $('over-next').classList.toggle('hidden', !(r.mode === 'campaign' && r.won && !isCampaignFinal));
+  const nextBattle = r.mode === 'campaign' && r.won && !isCampaignFinal ? CAMPAIGN[r.campaignIndex + 1] : null;
+  $('over-next').textContent = nextBattle && nextBattle.elite ? '⚔ FINAL BOSS →' : 'Next Battle';
   $('over-again').textContent = r.mode === 'campaign' ? 'Retry This Battle' : 'Play Again';
   show('ov-over');
   status($('over-title').textContent);
@@ -153,7 +159,7 @@ game.ui.onGameOver = (r) => {
 $('over-next').onclick = () => {
   audio.click();
   const next = CAMPAIGN[game.campaignIndex + 1];
-  const opts = { mode: 'campaign', arena: next.arena, p1Hero: game.campaignHero || 'kairo', p2Hero: next.ai, p2AI: next.diff, campaignIndex: game.campaignIndex + 1 };
+  const opts = { mode: 'campaign', arena: next.arena, p1Hero: game.campaignHero || 'kairo', p2Hero: next.ai, p2AI: next.diff, campaignIndex: game.campaignIndex + 1, elite: !!next.elite };
   game.campaignDiff = next.diff;
   launchBattle(opts);
 };
@@ -172,8 +178,10 @@ new Input(canvas, game, renderer, togglePause);
 let last = performance.now();
 function loop(now) {
   const dt = Math.min(0.05, (now - last) / 1000); last = now;
-  game.update(dt);
-  renderer.draw(game, now / 1000);
+  // The loop must never die: a single throw used to freeze the whole game
+  // (Nov 2026 — a NaN projectile killed the rAF chain). Log and carry on.
+  try { game.update(dt); renderer.draw(game, now / 1000); }
+  catch (err) { console.error('[loop] recovered from error:', err); }
   requestAnimationFrame(loop);
 }
 
@@ -194,6 +202,9 @@ loadAssets().then(() => {
     game.campaignDiff = 'normal';
     launchBattle({ mode: 'versus', arena: 'canyon', p1Hero: 'kairo', p2Hero: 'nyx', p2AI: null, seed });
     game.setAim(62, 700);
+    // v2 staging: show a set reflect trap in the combat shot.
+    game.players[0].energy = 100;
+    game.placeTrap();
   } else if (shot === 'ultimate') {
     game.campaignDiff = 'normal';
     launchBattle({ mode: 'versus', arena: 'canyon', p1Hero: 'kairo', p2Hero: 'nyx', p2AI: null, seed });

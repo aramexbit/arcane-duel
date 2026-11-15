@@ -75,7 +75,22 @@ export const DIFFICULTY = {
   easy:   { id: 'easy',   name: 'Apprentice', aimErr: 0.18, angErr: 8,  react: 1400, skillUse: 0.15 },
   normal: { id: 'normal', name: 'Adept',      aimErr: 0.08, angErr: 3,  react: 1100, skillUse: 0.35 },
   hard:   { id: 'hard',   name: 'Archmage',   aimErr: 0.02, angErr: 1,  react: 800,  skillUse: 0.55 },
+  elite:  { id: 'elite',  name: 'Elite',      aimErr: 0.01, angErr: 0.5, react: 600, skillUse: 0.70 },
 };
+
+// v2 — movement + utility skills (shared by all heroes; Nyx teleports cheaper).
+export const MOVE_STEPS = 150;      // px of walking allowed per turn
+export const MOVE_SPEED = 95;       // px/s while walking
+export const TELEPORT_RANGE = 420;  // max teleport distance (px)
+export const TELEPORT_COST = 30;    // energy (Nyx: 20)
+export const TRAP_COST = 35;        // energy
+export const TRAP_TURNS = 2;        // trap lasts this many turns unless triggered
+export const TRAP_RADIUS = 48;      // reflect trigger radius (px)
+export const HEAL_COST = 40;        // energy
+export const HEAL_AMOUNT = 25;      // HP restored
+export const FULL_POWER = 950;      // aim power that unleashes a Full Power shot
+export const ELITE_HP = 150;        // elite final-boss HP
+export const ELITE_DMG_MUL = 1.25;  // elite damage multiplier
 
 // Deterministic RNG (mulberry32) for terrain + shots staging.
 export function rng(seed) {

@@ -126,9 +126,15 @@ export function solveShot(from, target, wind, terrain, err) {
     const pw = clamp(Math.sqrt(dx * GRAVITY) * 1.05, 300, 950);
     best = { angle: 55, power: pw, miss: 999 };
   }
+  // err may be a DIFFICULTY entry ({angErr, aimErr}) or the old {ang, aim} shape.
+  const angErr = err.angErr ?? err.ang ?? 0;
+  const aimErr = err.aimErr ?? err.aim ?? 0;
   const noisy = {
-    angle: clamp(best.angle + (Math.random() * 2 - 1) * err.ang, 15, 85),
-    power: clamp(best.power * (1 + (Math.random() * 2 - 1) * err.aim), 200, 950),
+    angle: clamp(best.angle + (Math.random() * 2 - 1) * angErr, 15, 85),
+    power: clamp(best.power * (1 + (Math.random() * 2 - 1) * aimErr), 200, 950),
   };
+  // Never hand the game a non-finite aim: a NaN angle poisons the projectile
+  // velocity and used to kill the whole rAF loop in the renderer (Nov 2026).
+  if (!Number.isFinite(noisy.angle) || !Number.isFinite(noisy.power)) return { angle: 55, power: 600 };
   return noisy;
 }

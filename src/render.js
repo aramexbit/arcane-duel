@@ -12,7 +12,7 @@ export function loadAssets() {
   for (const h of heroes) SPRITE_LIST.push(`portrait_${h}`);
   SPRITE_LIST.push('proj_cannon', 'proj_fire', 'proj_moon', 'proj_boulder', 'proj_homing', 'proj_pierce',
     'proj_cluster', 'proj_beam', 'proj_meteor', 'proj_astral', 'proj_shield',
-    'expl_0', 'expl_1', 'expl_2', 'arcane_zone', 'spark',
+    'expl_0', 'expl_1', 'expl_2', 'arcane_zone', 'spark', 'trap_totem',
     'decor_crystal_blue', 'decor_crystal_pink', 'decor_crystal_gold', 'decor_pillar', 'decor_cloud',
     'decor_grass', 'decor_flower', 'decor_crate', 'decor_barrel', 'decor_moon', 'decor_torch');
   return Promise.all(SPRITE_LIST.map(n => new Promise(res => {
@@ -57,12 +57,25 @@ export class Renderer {
     // both heroes stay in frame).
     let zx = 1, zy = 1, ox = 0, oy = 0;
     if (game.cine) { const s = 1.08; const fx = (game.players[0].x + game.players[1].x) / 2, fy = 430; zx = s; ox = W / 2 - fx * s; oy = H / 2 - fy * s; }
+    // v2 — camera follows the projectile in flight (gentle zoom-in, clamped
+    // so the world edges never show bare canvas). This is what makes enemy
+    // shots visible: the eye rides along with the shell.
+    else if (game.phase === 'flying' && game.projectiles.length) {
+      let fx = 0, fy = 0, n = 0;
+      for (const pr of game.projectiles) { fx += pr.x; fy += pr.y; n++; }
+      fx /= n; fy /= n;
+      const s = 1.06;
+      zx = s; zy = s;
+      ox = Math.max(-77, Math.min(0, W / 2 - fx * s));
+      oy = Math.max(-43, Math.min(0, H / 2 - fy * s));
+    }
     if (game.shake > 0.5) { ox += (Math.random() - 0.5) * game.shake; oy += (Math.random() - 0.5) * game.shake; }
     ctx.translate(ox, oy); ctx.scale(zx, zy);
     this._background(game, now);
     this._terrain(game);
     this._zones(game, now);
     this._crates(game);
+    this._traps(game, now);
     this._heroes(game, now);
     this._projectiles(game);
     this._particles(game);
@@ -164,6 +177,28 @@ export class Renderer {
       text(ctx, 'ARCANE', z.x, z.y - 46, 11, '#d9b8ff', 'center');
     }
   }
+  _traps(game, now) {
+    const ctx = this.ctx;
+    for (const t of game.traps) {
+      const pulse = 1 + Math.sin(now * 5) * 0.12;
+      const img = imageFor('trap_totem');
+      // Pulsing reflect field.
+      ctx.beginPath(); ctx.arc(t.x, t.y - 40, 48 * pulse, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(80,220,240,0.65)'; ctx.lineWidth = 3; ctx.stroke();
+      ctx.beginPath(); ctx.arc(t.x, t.y - 40, 48 * pulse, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(80,220,240,0.08)'; ctx.fill();
+      if (img) ctx.drawImage(img, t.x - 32, t.y - 96, 64, 96);
+      text(ctx, 'REFLECT', t.x, t.y - 108, 11, '#50dcf0', 'center');
+    }
+    // v2 — teleport targeting: show the range circle + hint while armed.
+    if (game.teleportMode) {
+      const p = game.active();
+      ctx.beginPath(); ctx.arc(p.x, p.y - 60, 420, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(201,167,255,0.5)'; ctx.setLineDash([10, 8]); ctx.lineWidth = 2; ctx.stroke();
+      ctx.setLineDash([]);
+      text(ctx, 'CLICK A SPOT TO TELEPORT  (Esc cancels)', p.x, p.y - 200, 14, '#c9a7ff', 'center');
+    }
+  }
   _crates(game) {
     const ctx = this.ctx;
     for (const c of game.crates) {
@@ -193,6 +228,18 @@ export class Renderer {
         if (sh) ctx.drawImage(sh, p.x - 58, p.y - 150, 116, 116);
         ctx.globalAlpha = 1;
       }
+      // v2 — elite boss: gold crown + dark aura so it reads as the final boss.
+      if (p.elite) {
+        ctx.fillStyle = 'rgba(120,20,20,0.25)';
+        ctx.beginPath(); ctx.ellipse(p.x, p.y - 70, 66, 78, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#ffd76a'; ctx.strokeStyle = '#7a4a00'; ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(p.x - 26, p.y - 178); ctx.lineTo(p.x - 26, p.y - 198); ctx.lineTo(p.x - 13, p.y - 186);
+        ctx.lineTo(p.x, p.y - 202); ctx.lineTo(p.x + 13, p.y - 186); ctx.lineTo(p.x + 26, p.y - 198);
+        ctx.lineTo(p.x + 26, p.y - 178); ctx.closePath(); ctx.fill(); ctx.stroke();
+        ctx.fillStyle = '#ff5a4e';
+        ctx.beginPath(); ctx.arc(p.x, p.y - 188, 4, 0, Math.PI * 2); ctx.fill();
+      }
       // Name tag.
       text(ctx, `${p.hero.name}`, p.x, p.y - 158, 13, '#ffffff', 'center');
       // Falling indicator.
@@ -203,22 +250,40 @@ export class Renderer {
   _projectiles(game) {
     const ctx = this.ctx;
     for (const pr of game.projectiles) {
+      // A poisoned projectile must never throw inside draw (Nov 2026).
+      if (!Number.isFinite(pr.x) || !Number.isFinite(pr.y)) continue;
+      const isEnemy = game.players[pr.owner] && game.players[pr.owner].ai;
+      const glowColor = pr.fullPower ? '#ffd76a' : pr.elem === 'arcane' ? '#c9a7ff' : pr.elem === 'fire' ? '#ff8c2f' : '#ffb347';
+      // v2 — glowing halo so every shot (especially the enemy's) is visible.
+      const halo = ctx.createRadialGradient(pr.x, pr.y, 4, pr.x, pr.y, pr.fullPower ? 64 : 44);
+      halo.addColorStop(0, glowColor); halo.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.globalAlpha = 0.55; ctx.fillStyle = halo;
+      ctx.beginPath(); ctx.arc(pr.x, pr.y, pr.fullPower ? 64 : 44, 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = 1;
       // Trail.
-      ctx.strokeStyle = pr.elem === 'arcane' ? 'rgba(192,140,255,0.7)' : pr.elem === 'fire' ? 'rgba(255,140,50,0.7)' : 'rgba(255,255,255,0.5)';
-      ctx.lineWidth = 3; ctx.beginPath();
+      ctx.strokeStyle = pr.elem === 'arcane' ? 'rgba(192,140,255,0.8)' : pr.elem === 'fire' ? 'rgba(255,140,50,0.8)' : pr.fullPower ? 'rgba(255,215,106,0.9)' : 'rgba(255,255,255,0.55)';
+      ctx.lineWidth = pr.fullPower ? 7 : 5; ctx.beginPath();
       pr.trail.forEach(([x, y], i) => { if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y); });
       ctx.stroke();
       const spr = { cannon: 'proj_cannon', ball: 'proj_cannon', meteor: 'proj_meteor', fireball: 'proj_fire',
         arcane: 'proj_moon', starbolt: 'proj_astral', boulder: 'proj_boulder', homing: 'proj_homing',
         pierce: 'proj_pierce', cluster: 'proj_cluster', bomblet: 'proj_cluster', beam: 'proj_beam' }[pr.kind] || 'proj_cannon';
       const img = imageFor(spr);
-      const size = spr === 'proj_meteor' ? 72 : 44;
+      const size = spr === 'proj_meteor' ? 72 : pr.fullPower ? 66 : 44;
       if (img) {
         ctx.save(); ctx.translate(pr.x, pr.y);
         ctx.rotate(Math.atan2(pr.vy, pr.vx));
         ctx.drawImage(img, -size / 2, -size / 2, size, size);
         ctx.restore();
       } else { ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(pr.x, pr.y, 8, 0, Math.PI * 2); ctx.fill(); }
+      // v2 — enemy shots get a pulsing red ring so the eye finds them instantly.
+      if (isEnemy) {
+        ctx.beginPath(); ctx.arc(pr.x, pr.y, 30 + Math.sin(game.time * 10) * 4, 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(255,90,78,0.9)'; ctx.lineWidth = 3; ctx.stroke();
+      }
+      if (pr.fullPower) {
+        text(ctx, 'FULL POWER!', pr.x, pr.y - 44, 13, '#ffd76a', 'center');
+      }
     }
   }
   _particles(game) {
@@ -235,8 +300,9 @@ export class Renderer {
     const ctx = this.ctx;
     if (game.state !== 'combat' || game.phase !== 'aim') return;
     const pts = game.previewPoints();
-    ctx.fillStyle = 'rgba(255,255,255,0.9)';
-    pts.forEach(([x, y], i) => { ctx.globalAlpha = 0.95 - i * 0.03; ctx.beginPath(); ctx.arc(x, y, i === 0 ? 5 : 3.5, 0, Math.PI * 2); ctx.fill(); });
+    const full = game.aim.power >= 950;
+    ctx.fillStyle = full ? 'rgba(255,215,106,1)' : 'rgba(255,255,255,0.9)';
+    pts.forEach(([x, y], i) => { ctx.globalAlpha = 0.95 - i * 0.03; ctx.beginPath(); ctx.arc(x, y, full ? 5 : i === 0 ? 5 : 3.5, 0, Math.PI * 2); ctx.fill(); });
     ctx.globalAlpha = 1;
   }
   _floaters(game) {
@@ -249,7 +315,7 @@ export class Renderer {
   }
   _hud(game, now) {
     const ctx = this.ctx;
-    this.uiRegions = { weapons: [], skills: [] };
+    this.uiRegions = { weapons: [], skills: [], utility: [] };
     // Top player cards.
     this._playerCard(game, 0, 16, 14, false);
     this._playerCard(game, 1, W - 316, 14, true);
@@ -263,7 +329,9 @@ export class Renderer {
     // Aim readout (active player, bottom center-left).
     if (game.state === 'combat' && game.phase === 'aim') {
       rr(ctx, W / 2 - 150, H - 108, 300, 34, 10); ctx.fillStyle = 'rgba(8,12,30,0.72)'; ctx.fill();
-      text(ctx, `ANGLE ${Math.round(game.aim.angle)}°    POWER ${Math.round(game.aim.power)}`, W / 2, H - 90, 15, '#ffffff', 'center');
+      text(ctx, `ANGLE ${Math.round(game.aim.angle)}°    POWER ${Math.round(game.aim.power)}${game.aim.power >= 950 ? '  ★ FULL POWER!' : ''}`, W / 2, H - 90, 15, game.aim.power >= 950 ? '#ffd76a' : '#ffffff', 'center');
+      // v2 — walk meter under the aim readout.
+      text(ctx, `MOVE [A/D]: ${Math.round(p.moveSteps)}px left this turn`, W / 2, H - 116, 11, '#bfe9ff', 'center');
     }
     // Weapon inventory (bottom left).
     const p0 = game.active();
@@ -308,6 +376,31 @@ export class Renderer {
     // Skill names tooltip line.
     const sk = [p0.hero.skill1, p0.hero.skill2, p0.hero.ult];
     text(ctx, sk.map(s => s.name).join('  •  '), W - 16, H - 52, 12, 'rgba(255,255,255,0.85)', 'right');
+    // v2 — utility buttons (bottom centre): Teleport / Trap / Heal. Free
+    // actions: they cost energy + cooldown but do not end the turn.
+    if (game.state === 'combat') {
+      const utils = [
+        { id: 'teleport', label: '✨ TELEPORT [T]', cost: game.teleportCost(p0), ready: game.utilityReady(p0, 'teleport') },
+        { id: 'trap', label: '🪞 TRAP [R]', cost: 35, ready: game.utilityReady(p0, 'trap') },
+        { id: 'heal', label: '💚 HEAL [H]', cost: 40, ready: game.utilityReady(p0, 'heal') },
+      ];
+      let ux = W / 2 - 195;
+      for (const u of utils) {
+        rr(ctx, ux, H - 62, 124, 34, 9);
+        ctx.fillStyle = u.ready ? 'rgba(90,140,255,0.85)' : 'rgba(8,12,30,0.78)'; ctx.fill();
+        ctx.strokeStyle = u.ready ? '#fff' : 'rgba(255,255,255,0.4)'; ctx.lineWidth = u.ready ? 2.5 : 1.5; ctx.stroke();
+        ctx.globalAlpha = u.ready ? 1 : 0.6;
+        text(ctx, u.label, ux + 62, H - 51, 12, '#fff', 'center');
+        text(ctx, `${u.cost}⚡`, ux + 62, H - 36, 10, '#fff', 'center');
+        ctx.globalAlpha = 1;
+        this.uiRegions.utility.push({ x: ux, y: H - 62, w: 124, h: 34, id: u.id });
+        ux += 132;
+      }
+      // Active trap indicator.
+      if (game.traps.some(t => t.owner === game.turn)) {
+        text(ctx, '🪞 YOUR TRAP IS SET', W / 2, H - 132, 12, '#50dcf0', 'center');
+      }
+    }
     // Pause + mute buttons (below the P2 card, so they never overlap it).
     rr(ctx, W - 96, 86, 80, 28, 8); ctx.fillStyle = 'rgba(8,12,30,0.72)'; ctx.fill();
     text(ctx, 'II  ESC', W - 56, 100, 12, '#fff', 'center');
@@ -322,7 +415,7 @@ export class Renderer {
     ctx.beginPath(); ctx.arc(x + 33, y + 33, 26, 0, Math.PI * 2); ctx.strokeStyle = p.hero.color; ctx.lineWidth = 3; ctx.stroke();
     const tx = x + 66;
     text(ctx, `${p.name} — ${p.hero.name}`, tx, y + 16, 14, '#fff', 'left');
-    bar(ctx, tx, y + 30, 200, 12, p.hp / 100, p.hp > 50 ? '#58d158' : p.hp > 25 ? '#ffb347' : '#ff5a4e');
+    bar(ctx, tx, y + 30, 200, 12, p.hp / p.maxHp, p.hp > p.maxHp * 0.5 ? '#58d158' : p.hp > p.maxHp * 0.25 ? '#ffb347' : '#ff5a4e');
     text(ctx, `${Math.max(0, Math.round(p.hp))}`, tx + 210, y + 36, 12, '#fff', 'left');
     bar(ctx, tx, y + 48, 200, 8, p.energy / 100, '#a06bff');
     text(ctx, `⚡${Math.round(p.energy)}${p.energy >= 100 ? ' ULT READY!' : ''}`, tx + 210, y + 52, 11, p.energy >= 100 ? '#ffd76a' : '#c9a7ff', 'left');
