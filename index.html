@@ -220,6 +220,7 @@
       <label><input type="checkbox" id="set-mute"> Mute all (M)</label>
       <label>🕹️ Touch button size <input type="range" id="set-touch-scale" min="0.8" max="1.3" step="0.05"> <span id="set-touch-scale-val">1.00×</span></label>
       <label>👻 Touch button opacity <input type="range" id="set-touch-opacity" min="0.5" max="1" step="0.05"> <span id="set-touch-opacity-val">85%</span></label>
+      <label>🎯 Aim sensitivity <input type="range" id="set-aim-sens" min="0.5" max="2" step="0.1"> <span id="set-aim-sens-val">1.0×</span></label>
       <label>🎨 Graphics quality</label>
       <div class="pickrow" id="set-quality">
         <button class="pick" data-q="low">Low</button>
@@ -252,6 +253,8 @@
       <h2>How to Play</h2>
       <div class="howto">
         <b>Goal:</b> Blast your rival to 0 HP before they blast you. Turns alternate — each shooting turn lasts <b>15 seconds</b>.<br>
+        <b>Delay queue:</b> every action costs time — the player with the lowest clock acts next. Light weapons are quick (Sting Dart +90), heavy ones are slow (Horn Cannon +160), skills +130, ultimate +200, Full Power shots +60 extra. A heavy action can let your rival act <b>twice</b> before you do — the turn banner says so ("⚡ TURN AGAIN!"). Passing (+60) and Shield (+60) are cheap, so you act sooner. The cost of your next shot is shown under your player card.<br>
+        <b>Aim sensitivity:</b> tune it in Settings (0.5× steady — 2.0× twitchy). It scales the AIM pad drag and field/mouse drag aim. At 0.5× a field drag builds power slowly — use the AIM pad or hold Space to charge to 100.<br>
         <b>Aim:</b> Move the mouse — the dotted line previews your shot (fan shows the aim arc). <span class="kbd">↑</span><span class="kbd">↓</span> angle, <span class="kbd">←</span><span class="kbd">→</span> power (0–100). <span class="kbd">V</span> toggles the preview.<br>
         <b>Move:</b> Hold <span class="kbd">A</span>/<span class="kbd">D</span> to walk (150 steps per turn). Reposition before you shoot!<br>
         <b>Fire:</b> Click, tap the 🔥 FIRE button, or hold <span class="kbd">Space</span> to charge power then release to fire. Fire at POWER 100 for a golden <b>FULL POWER</b> move — a different special for every weapon! When POW burns, click the 🔥 POW FIRE! button.<br>

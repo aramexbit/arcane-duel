@@ -16,6 +16,20 @@ export const FULL_POWER = 100;      // v3 — POW at power 100 (was 950)
 // preview simulator and the blast damage test (was 34 in the preview,
 // 36 live — a 2px mismatch in the "same physics" claim).
 export const CHAR_HIT_R = 36;
+// R4 — Aim sensitivity: multiplies drag-aim deltas (AIM pad) and the power
+// build-up of field/mouse drag aim. 1.0 = the behaviour since v3.1 P0
+// (0.35 deg/px + 0.3 power/px on the AIM pad). 2.0 = twice as twitchy,
+// 0.5 = twice as steady. Keyboard arrows + Space charge are NOT scaled
+// (fixed steps / fixed 70 power per second — they stay predictable).
+export const AIM_SENS_MIN = 0.5, AIM_SENS_MAX = 2, AIM_SENS_DEFAULT = 1;
+// R4 — Hit-stop: a brief freeze of the whole world after a Full Power
+// impact or a big hit, so shots land with weight. Duration scales with
+// graphics quality (Low barely freezes, High freezes longest). Seconds.
+// It can only ever fire during flying/resolving — never during 'aim' — so
+// it never eats into the 15s turn timer.
+export const HIT_STOP = { low: 0.04, medium: 0.07, high: 0.11 };
+export const HIT_STOP_FULL_MULT = 1.5; // Full Power impacts freeze longer
+export const HIT_STOP_BIG_DMG = 30;    // one blast dealing >= this = "big hit"
 // v3.1 Skin Feature — HERO_SCALE shrinks the hero/monster sprites so the
 // map reads wider (Bomb Heroes 2 style: small characters, wide arena).
 // Hit detection (CHAR_HIT_R=36) and the AI solver are UNCHANGED — only the
@@ -110,6 +124,28 @@ export const WEAPONS = {
   dart:    { id: 'dart',    name: 'Sting Dart',      kind: 'triple', dmg: 12, radius: 32, ammo: Infinity, speed: 1.1, weight: 0.6, windRes: 0.1, desc: "Tawon's light wind-blown darts." },
 };
 export const WEAPON_ORDER = ['cannon', 'triple', 'meteor', 'homing', 'pierce', 'cluster', 'beam', 'shield'];
+
+// R3 — Delay queue (turn-order costs, guntanks-style): every turn-ending
+// action costs time; the player with the lowest clock acts next. Light
+// actions act sooner, so a player who shoots light weapons (or passes,
+// or shields) gets the next turn back sooner; heavy weapons and the
+// ultimate delay your next turn — the foe may act twice before you do.
+// Costs are in arbitrary time units (100 = one standard turn).
+export const DELAY_BASE = 100;            // standard turn (teleport / heal / time-up)
+export const DELAY_SKILL = 130;           // skill 1 / 2
+export const DELAY_ULTIMATE = 200;        // ultimate (POINT 100)
+export const DELAY_PASS = 60;             // passing is cheap — you act sooner
+export const DELAY_SHIELD = 60;           // defensive shield is quick
+export const DELAY_FULLPOWER_BONUS = 60;  // Full Power moves cost extra time
+// Per-weapon delay: light darts are quick, heavy mortars are slow. The
+// hero/monster basics are included (the AI fires them too, same rules).
+export const WEAPON_DELAY = {
+  cannon: 100, triple: 110, meteor: 140, homing: 120, pierce: 120, cluster: 130, beam: 110, shield: 60,
+  moon: 100, boulder: 150, horn: 160, sting: 110, dart: 90,
+};
+export function weaponDelay(id, fullPower = false) {
+  return (WEAPON_DELAY[id] ?? DELAY_BASE) + (fullPower ? DELAY_FULLPOWER_BONUS : 0);
+}
 
 // v3 — FULL POWER moves: firing at power 100 unleashes a DIFFERENT special
 // per weapon (not the old generic +50%/+30%). `effect` drives _fireWeapon:

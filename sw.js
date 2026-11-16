@@ -1,7 +1,7 @@
 // ARCANE DUEL — service worker (Android v2 Tahap B). Cache-first for every
 // game asset so the game works fully offline after the first load.
 // Bump CACHE_NAME on every deploy so updates reach players.
-const CACHE_NAME = 'arcane-duel-v2';
+const CACHE_NAME = 'arcane-duel-v3';
 const ASSETS = [
   "./",
   "./index.html",

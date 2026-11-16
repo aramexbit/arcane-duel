@@ -663,7 +663,10 @@ export class Renderer {
   _playerCard(game, idx, x, y, right) {
     const ctx = this.ctx;
     const p = game.players[idx];
-    rr(ctx, x, y, 300, 66, 12); ctx.fillStyle = game.turn === idx && game.state === 'combat' ? 'rgba(255,215,106,0.25)' : 'rgba(8,12,30,0.72)'; ctx.fill();
+    // R3 — the card is 14px taller than before so the delay line fits:
+    // the active player sees the cost of the shot they are about to take,
+    // the other player sees the cost of their last action.
+    rr(ctx, x, y, 300, 80, 12); ctx.fillStyle = game.turn === idx && game.state === 'combat' ? 'rgba(255,215,106,0.25)' : 'rgba(8,12,30,0.72)'; ctx.fill();
     ctx.strokeStyle = p.hero.color; ctx.lineWidth = 2.5; ctx.stroke();
     const img = imageFor(`portrait_${p.hero.id}`);
     if (img) { ctx.save(); ctx.beginPath(); ctx.arc(x + 33, y + 33, 26, 0, Math.PI * 2); ctx.clip(); ctx.drawImage(img, x + 7, y + 7, 52, 52); ctx.restore(); }
@@ -677,6 +680,11 @@ export class Renderer {
     // button fires the ultimate. Shorter bar leaves room for the label.
     bar(ctx, tx, y + 48, 140, 8, p.energy / 100, '#a06bff');
     text(ctx, `POINT ${Math.round(p.energy)}${p.energy >= 100 ? ' • POW!' : ''}`, tx + 148, y + 52, 11, p.energy >= 100 ? '#ffd76a' : '#c9a7ff', 'left');
+    if (game.turn === idx && game.state === 'combat' && game.phase === 'aim') {
+      text(ctx, `⏱ This shot +${game.currentDelayCost()}`, tx, y + 70, 11, '#ffd76a', 'left');
+    } else if (game.lastCostByPlayer[idx] != null) {
+      text(ctx, `⏱ Last action +${game.lastCostByPlayer[idx]}`, tx, y + 70, 11, '#9fb8d8', 'left');
+    }
     if (p.shield > 0) text(ctx, `🛡 ${p.shield}`, x + 268, y + 16, 12, '#7ec8f7', 'center');
     void right;
   }

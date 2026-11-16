@@ -175,7 +175,10 @@ export class Input {
       if (g.phase === 'aim' && !g.active().ai) {
         const dx = x - rec.x0, dy = y - rec.y0;
         g.aimPadKnob = { dx: Math.max(-60, Math.min(60, dx)), dy: Math.max(-60, Math.min(60, dy)) };
-        g.setAim(rec.angle0 + (-dy) * 0.35, rec.power0 + dx * 0.3);
+        // R4 — aim sensitivity scales the relative drag (0.35 deg/px and
+        // 0.3 power/px are the 1.0x rates). Drags are incremental from the
+        // starting aim, so any sensitivity still reaches power 100.
+        g.setAim(rec.angle0 + (-dy) * 0.35 * g.aimSens, rec.power0 + dx * 0.3 * g.aimSens);
       }
     }
     else if (rec.role === 'aim') {

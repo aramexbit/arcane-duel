@@ -594,6 +594,9 @@ function syncSettings() {
   $('set-touch-opacity-val').textContent = Math.round(game.touchSettings.opacity * 100) + '%';
   // Android v2 Tahap B — graphics quality (field inside arcane-duel-settings).
   document.querySelectorAll('#set-quality .pick').forEach(b => b.classList.toggle('sel', b.dataset.q === game.quality));
+  // R4 — aim sensitivity (field inside arcane-duel-settings, default 1.0).
+  $('set-aim-sens').value = game.aimSens;
+  $('set-aim-sens-val').textContent = game.aimSens.toFixed(1) + '×';
 }
 document.querySelectorAll('#set-quality .pick').forEach(b => {
   b.onclick = () => { audio.ensure(); audio.click(); game.setQuality(b.dataset.q); syncSettings(); };
@@ -676,6 +679,10 @@ $('set-sfx').oninput = e => audio.setSfx(+e.target.value);
 $('set-mute').onchange = e => audio.setMuted(e.target.checked);
 $('set-touch-scale').oninput = e => { game.setTouchSettings(+e.target.value, undefined); $('set-touch-scale-val').textContent = (+e.target.value).toFixed(2) + '×'; };
 $('set-touch-opacity').oninput = e => { game.setTouchSettings(undefined, +e.target.value); $('set-touch-opacity-val').textContent = Math.round(+e.target.value * 100) + '%'; };
+// R4 — aim sensitivity: 0.5x = steady, 2.0x = twitchy. Applies to the AIM
+// pad drag and to field/mouse drag aim (power build-up); keyboard arrows
+// and Space charge keep their fixed steps.
+$('set-aim-sens').oninput = e => { game.setAimSens(+e.target.value); $('set-aim-sens-val').textContent = game.aimSens.toFixed(1) + '×'; };
 $('set-back').onclick = () => show('ov-menu');
 
 // ------------------------------------------------------------ pause / game over

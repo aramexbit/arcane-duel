@@ -1,5 +1,5 @@
 // ARCANE DUEL — game state machine, combat, skills, ultimates, AI, combos.
-import { W, WORLD_W, H, GRAVITY, TURN_TIME, MAX_HP, CHAR_HIT_R, HERO_SCALE, HEROES, WEAPONS, WEAPON_ORDER, ARENAS, ARENA_ORDER, DIFFICULTY, MOVE_STEPS, MOVE_SPEED, TELEPORT_RANGE, TELEPORT_COST, TRAP_COST, TRAP_TURNS, TRAP_RADIUS, HEAL_COST, HEAL_AMOUNT, FULL_POWER, POWER_VEL, FULL_POWER_MOVES, SHOP_PRICES, FREE_WEAPONS, WIN_CREDITS, AI_SHOP_OWNED, ELITE_HP, ELITE_DMG_MUL, SURVIVAL_ROSTER, SURVIVAL_DIFFS, SURVIVAL_ARENAS, SURVIVAL_HP_PER_WAVE, SURVIVAL_DMG_PER_WAVE, CHALLENGES, SPEEDRUN_MAX_TURNS, QUALITY, SKIN_THEMES, SKIN_WEAPONS, GEMS_PER_DAMAGE, GEMS_PER_HIT, GEMS_WIN_BONUS, GEMS_LOSS_BONUS, STREAK_BONUS_PER_WIN, skinById, clamp, rng } from './config.js';
+import { W, WORLD_W, H, GRAVITY, TURN_TIME, MAX_HP, CHAR_HIT_R, HERO_SCALE, AIM_SENS_MIN, AIM_SENS_MAX, AIM_SENS_DEFAULT, HIT_STOP, HIT_STOP_FULL_MULT, HIT_STOP_BIG_DMG, DELAY_BASE, DELAY_SKILL, DELAY_ULTIMATE, DELAY_PASS, DELAY_SHIELD, weaponDelay, HEROES, WEAPONS, WEAPON_ORDER, ARENAS, ARENA_ORDER, DIFFICULTY, MOVE_STEPS, MOVE_SPEED, TELEPORT_RANGE, TELEPORT_COST, TRAP_COST, TRAP_TURNS, TRAP_RADIUS, HEAL_COST, HEAL_AMOUNT, FULL_POWER, POWER_VEL, FULL_POWER_MOVES, SHOP_PRICES, FREE_WEAPONS, WIN_CREDITS, AI_SHOP_OWNED, ELITE_HP, ELITE_DMG_MUL, SURVIVAL_ROSTER, SURVIVAL_DIFFS, SURVIVAL_ARENAS, SURVIVAL_HP_PER_WAVE, SURVIVAL_DMG_PER_WAVE, CHALLENGES, SPEEDRUN_MAX_TURNS, QUALITY, SKIN_THEMES, SKIN_WEAPONS, GEMS_PER_DAMAGE, GEMS_PER_HIT, GEMS_WIN_BONUS, GEMS_LOSS_BONUS, STREAK_BONUS_PER_WIN, skinById, clamp, rng } from './config.js';
 import { Terrain, simulateShot, solveShot } from './engine.js';
 
 const SPRITE_W = 120, SPRITE_H = 150;
@@ -44,9 +44,13 @@ export class Game {
     // Android v2 Tahap B — graphics quality (own field inside the shared
     // settings key; audio.save() merges instead of overwriting).
     this.quality = 'medium';
+    // R4 — aim sensitivity (own field inside the shared settings key;
+    // default 1.0 when the save predates it).
+    this.aimSens = AIM_SENS_DEFAULT;
     try {
       const s = JSON.parse(localStorage.getItem('arcane-duel-settings') || '{}');
       if (s.quality && QUALITY[s.quality]) this.quality = s.quality;
+      if (typeof s.aimSens === 'number' && Number.isFinite(s.aimSens)) this.aimSens = clamp(s.aimSens, AIM_SENS_MIN, AIM_SENS_MAX);
     } catch (e) { /* ignore */ }
     // Android v2 Tahap B — Survival best wave + completed challenges.
     this.survivalBest = 0;
@@ -109,6 +113,15 @@ export class Game {
     this.challengeFailed = false; this.challengeFailReason = null;
     this.challengeResult = null; // 'complete' | 'failed' (set at game over)
     this.weatherT = 0; // Android v2 Tahap B — ambient weather spawn timer
+    // R3 — delay queue: per-player clocks (time spent acting). The player
+    // with the lowest clock acts next. `pendingDelay` is the cost of the
+    // action that just ended (paid in nextTurn); `lastDelay` is the last
+    // paid cost (probe + HUD read it); `lastCostByPlayer` feeds the HUD.
+    this.clocks = [0, 0]; this.pendingDelay = null; this.lastDelay = null;
+    this.lastCostByPlayer = [null, null];
+    // R4 — hit-stop: seconds of world freeze left (0 = running normally).
+    // `lastHitStop` is the last freeze fired (probe reads it).
+    this.hitStop = 0; this.lastHitStop = null; this.hitStopCount = 0;
   }
   // Android v2 Tahap B — graphics quality: saved in arcane-duel-settings.
   setQuality(q) {
@@ -121,6 +134,32 @@ export class Game {
     return true;
   }
   qualityCap() { return QUALITY[this.quality] || QUALITY.medium; }
+  // R4 — aim sensitivity: stored as a field inside the shared settings
+  // key (same merge-save pattern as setQuality; old saves default to 1.0).
+  setAimSens(v) {
+    if (typeof v !== 'number' || !Number.isFinite(v)) return false;
+    this.aimSens = clamp(v, AIM_SENS_MIN, AIM_SENS_MAX);
+    try {
+      const prev = JSON.parse(localStorage.getItem('arcane-duel-settings') || '{}');
+      localStorage.setItem('arcane-duel-settings', JSON.stringify({ ...prev, aimSens: this.aimSens }));
+    } catch (e) { /* ignore */ }
+    return true;
+  }
+  // R3 — the delay cost of the shot the active player is about to take
+  // (selected weapon + Full Power bonus), for the HUD readout.
+  currentDelayCost() {
+    return weaponDelay(this.selectedWeapon, this.aim.power >= FULL_POWER);
+  }
+  // R4 — hit-stop: freeze the world briefly so a big impact lands with
+  // weight. Duration scales with graphics quality; Full Power freezes
+  // longer. A new freeze never shortens one already running (max wins).
+  triggerHitStop(kind) {
+    const base = HIT_STOP[this.quality] ?? HIT_STOP.medium;
+    const ms = base * (kind === 'full' ? HIT_STOP_FULL_MULT : 1);
+    this.hitStop = Math.max(this.hitStop, ms);
+    this.lastHitStop = { kind, ms, t: this.time };
+    this.hitStopCount++;
+  }
   // Android v2 Tahap B — Survival wave spec: which foe, difficulty, arena,
   // HP bonus and damage multiplier for this wave.
   survivalSpec(wave) {
@@ -322,6 +361,8 @@ export class Game {
     this.teleportMode = false;
     this.setBanner('⏭ PASS', `${p.name} skips the turn`, 1.4, '#bfe9ff');
     this.audio.click();
+    // R3 — passing is cheap: you act sooner next time.
+    this.pendingDelay = { actor: this.turn, cost: DELAY_PASS, label: 'Pass' };
     this.nextTurn();
     return true;
   }
@@ -395,7 +436,8 @@ export class Game {
     const dx = (mx - m.x) * p.facing, dy = -(my - m.y);
     if (Math.hypot(dx, dy) < 20) return;
     const ang = clamp(Math.atan2(dy, Math.max(1, dx)) * 180 / Math.PI, 0, 180);
-    const pw = clamp(Math.hypot(mx - m.x, my - m.y) * 0.11, 5, 100);
+    // R4 — aim sensitivity scales how fast power builds with drag distance.
+    const pw = clamp(Math.hypot(mx - m.x, my - m.y) * 0.11 * this.aimSens, 5, 100);
     this.setAim(ang, pw);
   }
   // v3 — touch drag aim: drag anywhere on the field; the drag vector from
@@ -414,7 +456,10 @@ export class Game {
     const ang = clamp(Math.atan2(dy, Math.max(1, dx)) * 180 / Math.PI, 0, 180);
     const zoom = this.camMode === 'zoomout' ? 0.62 : 1;
     const refDist = 0.5 * Math.hypot(W / zoom, H / zoom);
-    const pw = clamp(Math.hypot(tx - m.x, ty - m.y) / refDist * 100, 5, 100);
+    // R4 — aim sensitivity scales how fast power builds with drag distance
+    // (at 0.5x a full-screen drag only reaches ~50 power — the AIM pad's
+    // incremental drags and Space charge still reach 100).
+    const pw = clamp(Math.hypot(tx - m.x, ty - m.y) / refDist * 100 * this.aimSens, 5, 100);
     this.setAim(ang, pw);
   }
   _muzzle(p) {
@@ -456,6 +501,8 @@ export class Game {
       p.ammo.shield--; p.shield = 40;
       this.setBanner('SHIELD UP', `${p.hero.name} blocks 40 damage`, 1.6);
       this.audio.skill(); this._endShot(p);
+      // R3 — a defensive shield is quick: you act sooner next time.
+      this.pendingDelay = { actor: this.turn, cost: DELAY_SHIELD, label: 'Shield' };
       return true;
     }
     if (p.ammo[weaponId] !== Infinity) { if (p.ammo[weaponId] <= 0) return false; p.ammo[weaponId]--; }
@@ -466,6 +513,9 @@ export class Game {
     // v3 — FULL POWER: each weapon unleashes its OWN special move at power 100.
     const full = this.aim.power >= FULL_POWER;
     const fpMove = full ? FULL_POWER_MOVES[weaponId] : null;
+    // R3 — the shot's delay cost is paid when the turn ends (nextTurn):
+    // heavy weapons + Full Power delay your next turn.
+    this.pendingDelay = { actor: this.turn, cost: weaponDelay(weaponId, full), label: w.name + (full ? ' FULL POWER' : '') };
     // v3.1 Skin Feature — the shooter's equipped skin rides with the shot
     // (cosmetic only: it changes the look + sound, never the damage).
     const skin = this.equippedSkin(weaponId);
@@ -567,6 +617,8 @@ export class Game {
     this.teleportMode = false;
     this.audio.teleport();
     // v3 — teleport ends the turn (no shooting afterwards).
+    // R3 — a standard turn's worth of time.
+    this.pendingDelay = { actor: this.turn, cost: DELAY_BASE, label: 'Teleport' };
     this.setBanner('✨ TELEPORTED — TURN OVER', 'Teleport uses up the whole turn', 1.6, '#c9a7ff');
     this._endShot(p);
     return true;
@@ -594,6 +646,8 @@ export class Game {
     this.setBanner('💚 HEALED!', `${p.hero.name} recovers ${HEAL_AMOUNT} HP`, 1.5, '#58d158');
     this.audio.heal();
     // v3 — heal ends the turn (no shooting afterwards).
+    // R3 — a standard turn's worth of time.
+    this.pendingDelay = { actor: this.turn, cost: DELAY_BASE, label: 'Heal' };
     this._endShot(p);
     return true;
   }
@@ -614,6 +668,9 @@ export class Game {
     const def = slot === 1 ? p.hero.skill1 : slot === 2 ? p.hero.skill2 : p.hero.ult;
     p.energy -= def.cost; p.cds[def.id] = def.cd || 0;
     p.pose = 'fire'; p.poseT = 0.5;
+    // R3 — skills cost time (ultimate costs the most: the foe may act
+    // twice before you do). Paid when the turn ends (nextTurn).
+    this.pendingDelay = { actor: this.turn, cost: slot === 3 ? DELAY_ULTIMATE : DELAY_SKILL, label: def.name };
     // Android v2 Tahap B — Challenge: a skill / ultimate counts as a shot
     // too (a wall is defensive, not a shot, so it doesn't count).
     if (this.mode === 'challenge' && this.turn === 0 && def.id !== 'wall') {
@@ -670,6 +727,8 @@ export class Game {
       this.terrain.crater(fx, this.terrain.groundY(fx), 110);
       this._burst(fx, this.terrain.groundY(fx) - 30, '#8a7a5e', 30);
       this.shake = 18;
+      // R4 — the ultimate's ground slam freezes the world briefly.
+      this.triggerHitStop('full');
       this._damagePlayer(1 - this.turn, 55, fx, this.terrain.groundY(fx) - 60, 'earth');
       for (let i = 0; i < 3; i++) this.pending.push({ delay: 0.2 + i * 0.25, kind: 'boulder', x: foe.x - 90 + i * 90, y: 40, owner: this.turn });
     }
@@ -683,7 +742,24 @@ export class Game {
     if (this.state !== 'combat') return;
     const loser = this.players.find(p => !p.alive);
     if (loser) { this._gameOver(1 - this.players.indexOf(loser)); return; }
-    this.turn = 1 - this.turn;
+    // R3 — delay queue: the player who just acted pays the cost of their
+    // action, then the player with the LOWEST clock acts next. Tie -> the
+    // other player, so plain alternation is preserved when costs are
+    // equal (two standard 100-cost turns still alternate). A heavy action
+    // leaves your clock high, so the foe may act twice before you do —
+    // that is the mechanic, and the HUD + turn banner say so out loud.
+    const prevTurn = this.turn;
+    let paid = null;
+    if (this.pendingDelay) {
+      paid = this.pendingDelay;
+      this.clocks[paid.actor] += paid.cost;
+      this.lastCostByPlayer[paid.actor] = paid.cost;
+      this.pendingDelay = null;
+    }
+    const [c0, c1] = this.clocks;
+    this.turn = c0 < c1 ? 0 : c1 < c0 ? 1 : 1 - prevTurn;
+    const doubleTurn = this.turn === prevTurn;
+    this.lastDelay = { actor: prevTurn, cost: paid ? paid.cost : 0, label: paid ? paid.label : '', clocks: [this.clocks[0], this.clocks[1]], doubleTurn, next: this.turn };
     const p = this.active();
     // Android v2 Tahap B — Speed Run counts the player's own turns: the
     // challenge is lost the moment the 7th player turn begins.
@@ -743,8 +819,12 @@ export class Game {
     if (this.ui.onTurn) this.ui.onTurn(this.turn);
     this.audio.turn();
     // Android v2 Tahap A — every turn change gets a clear animated banner.
+    // R3 — a double turn gets its own banner text, so the extra turn is
+    // never a silent surprise: the foe was delayed by a heavy action.
     const ap = this.active();
-    this.turnBanner = { text: `${ap.name}'S TURN`, sub: `${ap.hero.name} — ${ap.hero.title}`, t: 0, dur: 1.6 };
+    this.turnBanner = doubleTurn
+      ? { text: `⚡ ${ap.name}'S TURN AGAIN!`, sub: `${this.players[1 - this.turn].hero.name} delayed — heavy actions cost time`, t: 0, dur: 1.6 }
+      : { text: `${ap.name}'S TURN`, sub: `${ap.hero.name} — ${ap.hero.title}`, t: 0, dur: 1.6 };
   }
   _trainingTipText() {
     return ['Move the mouse to aim — the dotted line shows the flight path.',
@@ -943,6 +1023,12 @@ export class Game {
       const gy = this.terrain.groundY(p.x);
       if (gy > p.y + 6) { p.falling = true; p.fallStart = p.y; p.vy = 0; }
     }
+    // R4 — hit-stop: a Full Power blast, or any single blast dealing
+    // >= HIT_STOP_BIG_DMG to the heroes, freezes the world briefly so the
+    // hit lands heavy. (hpBefore was captured at the top of this call, so
+    // nested blasts — barrels, combos — are measured on their own.)
+    const dmgDealt = (hpBefore[0] - this.players[0].hp) + (hpBefore[1] - this.players[1].hp);
+    if (opts.fullPower || dmgDealt >= HIT_STOP_BIG_DMG) this.triggerHitStop(opts.fullPower ? 'full' : 'big');
     void combo;
   }
   // v3.1 Skin Feature — themed explosion FX for one skin blast. Reuses the
@@ -1200,6 +1286,11 @@ export class Game {
 
   // ------------------------------------------------------------ update
   update(dt) {
+    // R4 — hit-stop: while the freeze lasts, NOTHING advances (timer, AI,
+    // particles, banners, camera) — the render loop keeps drawing the
+    // frozen frame, so the impact reads as weight. The freeze is at most
+    // ~0.17s and only ever fires during flying/resolving, never in 'aim'.
+    if (this.hitStop > 0) { this.hitStop -= dt; return; }
     this.time += dt;
     if (this.banner) { this.banner.t += dt; if (this.banner.t > this.banner.dur) this.banner = null; }
     // Android v2 Tahap A — animated turn banner + lightning FX lifetimes.
@@ -1261,7 +1352,12 @@ export class Game {
     }
     if (this.phase === 'aim') {
       this.turnTimer -= dt;
-      if (this.turnTimer <= 0) { this.setBanner('TIME UP!', `${this.active().name} loses the turn`, 1.4); this.nextTurn(); return; }
+      if (this.turnTimer <= 0) {
+        this.setBanner('TIME UP!', `${this.active().name} loses the turn`, 1.4);
+        // R3 — a lost turn still costs a standard turn's worth of time.
+        this.pendingDelay = { actor: this.turn, cost: DELAY_BASE, label: 'Time up' };
+        this.nextTurn(); return;
+      }
       const p = this.active();
       // v3 — hold-to-charge: while Space is held, power ramps toward 100.
       if (this.charging && !p.ai) {
@@ -1467,7 +1563,7 @@ export class Game {
       // Android v2 Tahap A — beam slows, homing chains (see explode()).
       const tgtIdx = this.players.indexOf(target);
       this.explode(pr.x, pr.y, { dmg: def.dmg, radius: def.radius, elem: def.elem }, pr.owner,
-        { slow: pr.weapon === 'beam', chain: pr.weapon === 'homing', chainTarget: tgtIdx, skinTheme: pr.skinTheme, fullPowerSkin: !!(pr.fullPower && pr.skinTheme && pr.skinTheme !== 'default') });
+        { slow: pr.weapon === 'beam', chain: pr.weapon === 'homing', chainTarget: tgtIdx, skinTheme: pr.skinTheme, fullPowerSkin: !!(pr.fullPower && pr.skinTheme && pr.skinTheme !== 'default'), fullPower: !!pr.fullPower });
       // v3 — quake moves shatter the ground where they land.
       if (fpMove && fpMove.effect === 'quake') {
         this.terrain.crater(pr.x, this.terrain.groundY(pr.x), def.radius * 1.2);
@@ -1477,7 +1573,7 @@ export class Game {
       // v2.1: a blast that hurts nobody shows a floating MISS.
       const hpBefore = this.players.map(p => p.hp);
       const shBefore = this.players.map(p => p.shield);
-      this.explode(pr.x, pr.y, def, pr.owner, { noCrater: pr.kind === 'beam', slow: pr.weapon === 'beam', chain: pr.weapon === 'homing', chainTarget: -1, skinTheme: pr.skinTheme, fullPowerSkin: !!(pr.fullPower && pr.skinTheme && pr.skinTheme !== 'default') });
+      this.explode(pr.x, pr.y, def, pr.owner, { noCrater: pr.kind === 'beam', slow: pr.weapon === 'beam', chain: pr.weapon === 'homing', chainTarget: -1, skinTheme: pr.skinTheme, fullPowerSkin: !!(pr.fullPower && pr.skinTheme && pr.skinTheme !== 'default'), fullPower: !!pr.fullPower });
       if (fpMove && fpMove.effect === 'quake') {
         this.terrain.crater(pr.x, this.terrain.groundY(pr.x), def.radius * 1.2);
         this.shake = Math.max(this.shake, 16);
