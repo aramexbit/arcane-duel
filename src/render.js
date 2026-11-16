@@ -57,13 +57,17 @@ export class Renderer {
     // both heroes stay in frame).
     let zx = 1, zy = 1, ox = 0, oy = 0;
     if (game.cine) { const s = 1.08; const fx = (game.players[0].x + game.players[1].x) / 2, fy = 430; zx = s; ox = W / 2 - fx * s; oy = H / 2 - fy * s; }
+    // Android v2 Tahap A — zoom-out camera: the whole 2048px arena at
+    // 0.62x, centred, so both heroes are always visible at once.
+    else if (game.camMode === 'zoomout') { zx = 0.62; zy = 0.62; ox = (W - WORLD_W * 0.62) / 2; oy = (H - H * 0.62) / 2; }
     // v3 — the world camera lives in game.camX (scrolls across the wider
     // map, following the hero / projectile). During flight we only add a
     // gentle zoom; the position comes from camX, not from a second offset.
     else if (game.phase === 'flying' && game.projectiles.length) { zx = 1.06; zy = 1.06; }
     // v3 — apply the world camera (ignored during cinematics, which centre
     // themselves). camX is in world px; the translate runs pre-scale.
-    const cam = game.cine ? 0 : (game.camX || 0);
+    // Zoom-out mode has its own centring above, so camX stays 0 there.
+    const cam = (game.cine || game.camMode === 'zoomout') ? 0 : (game.camX || 0);
     ox -= cam * zx;
     if (game.shake > 0.5) { ox += (Math.random() - 0.5) * game.shake; oy += (Math.random() - 0.5) * game.shake; }
     ctx.translate(ox, oy); ctx.scale(zx, zy);
@@ -74,12 +78,27 @@ export class Renderer {
     this._traps(game, now);
     this._heroes(game, now);
     this._projectiles(game);
+    this._lightning(game);
     this._particles(game);
     this._preview(game);
     this._floaters(game);
     ctx.restore();
     if (game.state === 'combat' || game.state === 'pause' || game.state === 'over') this._hud(game, now);
     if (game.banner) this._banner(game);
+    if (game.turnBanner) this._turnBanner(game);
+  }
+  // Android v2 Tahap A — chain-lightning bolts (jagged polylines).
+  _lightning(game) {
+    const ctx = this.ctx;
+    for (const fx of game.lightningFx) {
+      const a = 1 - fx.t / fx.dur;
+      ctx.globalAlpha = Math.max(0, a);
+      ctx.strokeStyle = '#ffe08a'; ctx.lineWidth = 3; ctx.beginPath();
+      fx.pts.forEach(([x, y], i) => { if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y); });
+      ctx.stroke();
+      ctx.strokeStyle = 'rgba(255,255,255,0.9)'; ctx.lineWidth = 1.5; ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
   }
 
   _background(game, now) {
@@ -210,13 +229,24 @@ export class Renderer {
       if (!p.alive && p.pose !== 'defeat') continue;
       const pose = p.pose === 'idle' && this._idleFrame(now) ? 'idle_1' : p.pose === 'idle' ? 'idle_0' : p.pose;
       const img = imageFor(`${p.hero.id}_${pose}`) || imageFor(`${p.hero.id}_idle_0`);
-      const bob = p.pose === 'idle' ? Math.sin(now * 2 + p.x) * 2 : 0;
+      // Android v2 Tahap A — procedural walk/fall animation (no new
+      // sprites): walking bobs + leans forward, falling tilts sideways.
+      const walking = p.walkT > 0 && !p.falling;
+      const bob = p.pose === 'idle' ? Math.sin(now * 2 + p.x) * 2 : walking ? Math.sin(now * 14) * 4 : 0;
+      const tilt = p.falling ? 0.28 * p.facing : walking ? 0.07 * p.facing : 0;
       ctx.save();
       ctx.translate(p.x, p.y - 140 + bob);
+      if (tilt) ctx.rotate(tilt);
       if (p.facing === -1) ctx.scale(-1, 1);
       if (img) ctx.drawImage(img, -60, 0, 120, 150);
       else { ctx.fillStyle = p.hero.color; ctx.fillRect(-30, -90, 60, 90); }
       ctx.restore();
+      // Android v2 Tahap A — SLOWED (beam ice): blue ring + label.
+      if (p.slowTurns > 0) {
+        ctx.strokeStyle = 'rgba(126,200,247,0.9)'; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.ellipse(p.x, p.y - 70, 62, 76, 0, 0, Math.PI * 2); ctx.stroke();
+        text(ctx, 'SLOWED', p.x, p.y - 186, 11, '#7ec8f7', 'center');
+      }
       // Shield bubble.
       if (p.shield > 0) {
         const sh = imageFor('proj_shield');
@@ -332,7 +362,9 @@ export class Renderer {
   }
   _hud(game, now) {
     const ctx = this.ctx;
-    this.uiRegions = { weapons: [], skills: [], utility: [], powFire: null, fireBtn: null, dpad: [] };
+    this.uiRegions = { weapons: [], skills: [], utility: [], powFire: null, fireBtn: null, dpad: [], joystick: null, powerSlider: null, pauseBtn: null, camBtn: null };
+    // Touch press feedback: a button tapped <180ms ago draws highlighted.
+    const flash = game.pressFlash && (Date.now() - game.pressFlash.t) < 180 ? game.pressFlash.key : null;
     // Top player cards.
     this._playerCard(game, 0, 16, 14, false);
     this._playerCard(game, 1, W - 316, 14, true);
@@ -362,19 +394,29 @@ export class Renderer {
     const tColor = game.phase === 'aim' && tLeft <= 5 ? '#ff5a4e' : '#ffffff';
     const tSize = game.phase === 'aim' && tLeft <= 5 ? 16 + Math.sin(now * 8) * 2 : 13;
     text(ctx, `⏱ ${tLeft}s`, W / 2 + 52, 68, tSize, tColor, 'left');
-    // Aim readout (active player, bottom center-left).
+    // Aim readout (active player) — Android v2 Tahap A: moved to the top
+    // centre, below the VS header, so it never overlaps the weapon slots
+    // at the bottom (a pre-existing v3 cosmetic overlap).
     if (game.state === 'combat' && game.phase === 'aim') {
       // v3 — power is 0–100 now; show it as a number + a bar.
       const pow = Math.round(game.aim.power);
-      rr(ctx, W / 2 - 150, H - 108, 300, 34, 10); ctx.fillStyle = 'rgba(8,12,30,0.72)'; ctx.fill();
-      text(ctx, `ANGLE ${Math.round(game.aim.angle)}°    POWER ${pow}${pow >= FULL_POWER ? '  ★ FULL POWER!' : ''}`, W / 2, H - 96, 14, pow >= FULL_POWER ? '#ffd76a' : '#ffffff', 'center');
-      bar(ctx, W / 2 - 140, H - 82, 280, 7, pow / 100, pow >= FULL_POWER ? '#ffd76a' : '#ff7a2f');
+      rr(ctx, W / 2 - 150, 92, 300, 34, 10); ctx.fillStyle = 'rgba(8,12,30,0.72)'; ctx.fill();
+      ctx.strokeStyle = 'rgba(255,255,255,0.35)'; ctx.lineWidth = 1.5; ctx.stroke();
+      text(ctx, `ANGLE ${Math.round(game.aim.angle)}°    POWER ${pow}${pow >= FULL_POWER ? '  ★ FULL POWER!' : ''}`, W / 2, 104, 14, pow >= FULL_POWER ? '#ffd76a' : '#ffffff', 'center');
+      bar(ctx, W / 2 - 140, 118, 280, 7, pow / 100, pow >= FULL_POWER ? '#ffd76a' : '#ff7a2f');
       // v2 — walk meter under the aim readout.
-      text(ctx, `MOVE [A/D]: ${Math.round(p.moveSteps)}px left this turn`, W / 2, H - 116, 11, '#bfe9ff', 'center');
+      text(ctx, `MOVE [A/D]: ${Math.round(p.moveSteps)}px left this turn`, W / 2, 140, 11, '#bfe9ff', 'center');
       // v3 — charging indicator while Space is held.
-      if (game.charging) text(ctx, '⚡ CHARGING… release SPACE to fire!', W / 2, H - 132, 13, '#ffd76a', 'center');
+      if (game.charging) text(ctx, '⚡ CHARGING… release SPACE to fire!', W / 2, 156, 13, '#ffd76a', 'center');
+      // Android v2 Tahap A — SPECIAL READY must be obvious on mobile too.
+      if (pow >= FULL_POWER) {
+        const pulse = 15 + Math.sin(now * 6) * 2;
+        text(ctx, '★ SPECIAL READY — tap POW FIRE! ★', W / 2, 174, pulse, '#ffd76a', 'center');
+      }
     }
-    // Weapon inventory (bottom left).
+    // Weapon inventory (bottom left) — Android v2 Tahap A: slots 58 -> 64px
+    // so they stay finger-friendly when the 1280px canvas is letterboxed
+    // onto a phone screen.
     const p0 = game.active();
     let wx = 16;
     text(ctx, 'WEAPONS  [Q/E]', 16, H - 138, 12, '#ffd76a', 'left');
@@ -384,37 +426,37 @@ export class Renderer {
       const ammo = p0.ammo[id];
       const avail = ammo > 0;
       const locked = !p0.ai && !game.ownsWeapon(id); // v3 — shop-locked weapon (human side only)
-      rr(ctx, wx, H - 128, 58, 58, 10);
-      ctx.fillStyle = sel ? 'rgba(255,215,106,0.9)' : 'rgba(8,12,30,0.78)'; ctx.fill();
+      rr(ctx, wx, H - 128, 64, 64, 10);
+      ctx.fillStyle = sel ? 'rgba(255,215,106,0.9)' : flash === 'weapon:' + id ? 'rgba(255,215,106,0.55)' : 'rgba(8,12,30,0.78)'; ctx.fill();
       ctx.strokeStyle = sel ? '#fff' : 'rgba(255,255,255,0.4)'; ctx.lineWidth = sel ? 3 : 1.5; ctx.stroke();
       ctx.globalAlpha = avail ? 1 : 0.35;
       const spr = { cannon: 'proj_cannon', triple: 'proj_cluster', meteor: 'proj_meteor', homing: 'proj_homing', pierce: 'proj_pierce', cluster: 'proj_cluster', beam: 'proj_beam', shield: 'proj_shield' }[id];
       const img = imageFor(spr);
-      if (img) ctx.drawImage(img, wx + 11, H - 122, 36, 36);
-      if (locked) text(ctx, '🔒', wx + 29, H - 108, 20, '#ffd76a', 'center');
-      else text(ctx, ammo === Infinity ? '∞' : String(ammo), wx + 48, H - 82, 12, '#fff', 'center');
+      if (img) ctx.drawImage(img, wx + 12, H - 120, 40, 40);
+      if (locked) text(ctx, '🔒', wx + 32, H - 104, 20, '#ffd76a', 'center');
+      else text(ctx, ammo === Infinity ? '∞' : String(ammo), wx + 54, H - 76, 12, '#fff', 'center');
       ctx.globalAlpha = 1;
-      this.uiRegions.weapons.push({ x: wx, y: H - 128, w: 58, h: 58, id });
-      wx += 64;
+      this.uiRegions.weapons.push({ x: wx, y: H - 128, w: 64, h: 64, id });
+      wx += 70;
     }
     // Skill icons (bottom right).
-    let sx = W - 16 - 3 * 64;
+    let sx = W - 16 - 3 * 64 - 2 * 6;
     text(ctx, 'SKILLS  [1/2/3]', sx, H - 138, 12, '#ffd76a', 'left');
     const skills = [p0.hero.skill1, p0.hero.skill2, p0.hero.ult];
     skills.forEach((sk, i) => {
       const slot = i + 1;
       const ready = game.skillAvailable(p0, slot);
       const cd = p0.cds[sk.id] || 0;
-      rr(ctx, sx, H - 128, 58, 58, 10);
-      ctx.fillStyle = ready ? p0.hero.color : 'rgba(8,12,30,0.78)'; ctx.fill();
+      rr(ctx, sx, H - 128, 64, 64, 10);
+      ctx.fillStyle = ready ? p0.hero.color : flash === 'skill:' + slot ? 'rgba(255,255,255,0.35)' : 'rgba(8,12,30,0.78)'; ctx.fill();
       ctx.strokeStyle = ready ? '#fff' : 'rgba(255,255,255,0.4)'; ctx.lineWidth = ready ? 3 : 1.5; ctx.stroke();
       ctx.globalAlpha = ready ? 1 : 0.55;
-      text(ctx, slot === 3 ? '★' : String(slot), sx + 29, H - 108, 22, '#fff', 'center');
-      text(ctx, `${sk.cost}⚡`, sx + 29, H - 82, 11, '#fff', 'center');
+      text(ctx, slot === 3 ? '★' : String(slot), sx + 32, H - 104, 22, '#fff', 'center');
+      text(ctx, `${sk.cost}⚡`, sx + 32, H - 76, 11, '#fff', 'center');
       ctx.globalAlpha = 1;
-      if (cd > 0) text(ctx, `CD ${cd}`, sx + 29, H - 96, 11, '#ff9d9d', 'center');
-      this.uiRegions.skills.push({ x: sx, y: H - 128, w: 58, h: 58, slot });
-      sx += 64;
+      if (cd > 0) text(ctx, `CD ${cd}`, sx + 32, H - 92, 11, '#ff9d9d', 'center');
+      this.uiRegions.skills.push({ x: sx, y: H - 128, w: 64, h: 64, slot });
+      sx += 70;
     });
     // Skill names tooltip line.
     const sk = [p0.hero.skill1, p0.hero.skill2, p0.hero.ult];
@@ -430,24 +472,25 @@ export class Renderer {
         { id: 'heal', label: '💚 HEAL [H]', sub: 'ends turn', cost: 40, ready: game.utilityReady(p0, 'heal') },
         { id: 'emote', label: '😤 EMOTE [G]', cost: null, ready: game.phase === 'aim' },
       ];
-      let ux = W / 2 - 316;
+      let ux = W / 2 - 326;
       for (const u of utils) {
-        rr(ctx, ux, H - 62, 120, 34, 9);
-        ctx.fillStyle = u.ready ? 'rgba(90,140,255,0.85)' : 'rgba(8,12,30,0.78)'; ctx.fill();
+        // Android v2 Tahap A — utility buttons 120x34 -> 124x40 (finger-sized).
+        rr(ctx, ux, H - 64, 124, 40, 9);
+        ctx.fillStyle = u.ready ? 'rgba(90,140,255,0.85)' : flash === 'util:' + u.id ? 'rgba(90,140,255,0.55)' : 'rgba(8,12,30,0.78)'; ctx.fill();
         ctx.strokeStyle = u.ready ? '#fff' : 'rgba(255,255,255,0.4)'; ctx.lineWidth = u.ready ? 2.5 : 1.5; ctx.stroke();
         ctx.globalAlpha = u.ready ? 1 : 0.6;
         if (u.cost === null) {
-          text(ctx, u.label, ux + 60, H - 45, 12, '#fff', 'center');
+          text(ctx, u.label, ux + 62, H - 44, 12, '#fff', 'center');
         } else if (u.sub) {
-          text(ctx, u.label, ux + 60, H - 54, 11, '#fff', 'center');
-          text(ctx, `${u.cost}⚡ · ${u.sub}`, ux + 60, H - 38, 9, '#ffd76a', 'center');
+          text(ctx, u.label, ux + 62, H - 52, 11, '#fff', 'center');
+          text(ctx, `${u.cost}⚡ · ${u.sub}`, ux + 62, H - 36, 9, '#ffd76a', 'center');
         } else {
-          text(ctx, u.label, ux + 60, H - 51, 12, '#fff', 'center');
-          text(ctx, `${u.cost}⚡`, ux + 60, H - 36, 10, '#fff', 'center');
+          text(ctx, u.label, ux + 62, H - 50, 12, '#fff', 'center');
+          text(ctx, `${u.cost}⚡`, ux + 62, H - 35, 10, '#fff', 'center');
         }
         ctx.globalAlpha = 1;
-        this.uiRegions.utility.push({ x: ux, y: H - 62, w: 120, h: 34, id: u.id });
-        ux += 128;
+        this.uiRegions.utility.push({ x: ux, y: H - 64, w: 124, h: 40, id: u.id });
+        ux += 132;
       }
       // Active trap indicator.
       if (game.traps.some(t => t.owner === game.turn)) {
@@ -465,25 +508,63 @@ export class Renderer {
         text(ctx, '🔥 POW FIRE! 🔥', W / 2, by + bh / 2, 20, '#fff', 'center');
         this.uiRegions.powFire = { x: bx, y: by, w: bw, h: bh };
       }
-      // v3 — touch controls: big FIRE button + ◀ ▶ walk pad (touch only).
+      // Android v2 Tahap A — touch controls replace the old ◀ ▶ D-pad:
+      // virtual joystick (left), vertical power slider (right edge) and a
+      // big FIRE button (bottom right). Sizes follow the touch settings
+      // (scale 0.8–1.3, opacity 0.5–1.0, key arcane-duel-touch).
       if (game.touchMode && game.phase === 'aim') {
-        rr(ctx, W - 216, H - 196, 120, 56, 12);
-        ctx.fillStyle = 'rgba(255,90,40,0.92)'; ctx.fill();
+        const ts = game.touchSettings.scale, op = game.touchSettings.opacity;
+        // Virtual joystick: grab zone is bigger than the drawn base.
+        const jcx = 112, jcy = 468, jr = 60 * ts;
+        const joy = game.joystick || { dx: 0, dy: 0 };
+        ctx.globalAlpha = op;
+        ctx.beginPath(); ctx.arc(jcx, jcy, jr, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(8,12,30,0.55)'; ctx.fill();
+        ctx.strokeStyle = 'rgba(255,255,255,0.6)'; ctx.lineWidth = 2.5; ctx.stroke();
+        const kx = jcx + joy.dx * jr * 0.7, ky = jcy + joy.dy * jr * 0.7;
+        ctx.beginPath(); ctx.arc(kx, ky, 26 * ts, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(90,140,255,0.9)'; ctx.fill();
+        ctx.strokeStyle = '#fff'; ctx.lineWidth = 2.5; ctx.stroke();
+        ctx.globalAlpha = 1;
+        text(ctx, '◀ ▶', jcx, jcy + jr + 16, 12, 'rgba(255,255,255,0.8)', 'center');
+        this.uiRegions.joystick = { cx: jcx, cy: jcy, r: jr, grabR: jr + 34 };
+        // Vertical power slider: drag up = more power.
+        const sw = 34, sh = 170, sx0 = 1044, sy0 = 300;
+        const pow = game.aim.power;
+        ctx.globalAlpha = op;
+        rr(ctx, sx0, sy0, sw, sh, 12); ctx.fillStyle = 'rgba(8,12,30,0.55)'; ctx.fill();
+        ctx.strokeStyle = 'rgba(255,255,255,0.6)'; ctx.lineWidth = 2; ctx.stroke();
+        const fillH = Math.max(0, sh * pow / 100);
+        if (fillH > 4) { rr(ctx, sx0 + 4, sy0 + sh - fillH - 2, sw - 8, fillH, 8); ctx.fillStyle = pow >= FULL_POWER ? '#ffd76a' : '#ff7a2f'; ctx.fill(); }
+        const ty = sy0 + sh - (pow / 100) * sh;
+        ctx.beginPath(); ctx.arc(sx0 + sw / 2, ty, 16 * ts, 0, Math.PI * 2);
+        ctx.fillStyle = '#fff'; ctx.fill(); ctx.strokeStyle = '#ff7a2f'; ctx.lineWidth = 3; ctx.stroke();
+        ctx.globalAlpha = 1;
+        text(ctx, 'POWER', sx0 + sw / 2, sy0 - 14, 12, '#ffd76a', 'center');
+        text(ctx, String(Math.round(pow)), sx0 + sw / 2, sy0 + sh + 16, 13, '#fff', 'center');
+        this.uiRegions.powerSlider = { x: sx0, y: sy0, w: sw, h: sh };
+        // Big FIRE button (min 64px, here 160x90 at scale 1).
+        const fw = 160 * ts, fh = 90 * ts, fx = W - 20 - fw, fy = 470;
+        ctx.globalAlpha = op;
+        rr(ctx, fx, fy, fw, fh, 14);
+        ctx.fillStyle = flash === 'fire' ? 'rgba(255,140,80,1)' : 'rgba(255,90,40,0.92)'; ctx.fill();
         ctx.strokeStyle = '#fff'; ctx.lineWidth = 3; ctx.stroke();
-        text(ctx, '🔥 FIRE', W - 156, H - 168, 20, '#fff', 'center');
-        this.uiRegions.fireBtn = { x: W - 216, y: H - 196, w: 120, h: 56 };
-        for (const [dir, label, dx] of [[-1, '◀', 0], [1, '▶', 64]]) {
-          rr(ctx, 16 + dx, H - 196, 56, 56, 12);
-          ctx.fillStyle = 'rgba(90,140,255,0.85)'; ctx.fill();
-          ctx.strokeStyle = '#fff'; ctx.lineWidth = 2.5; ctx.stroke();
-          text(ctx, label, 44 + dx, H - 168, 24, '#fff', 'center');
-          this.uiRegions.dpad.push({ x: 16 + dx, y: H - 196, w: 56, h: 56, dir });
-        }
+        ctx.globalAlpha = 1;
+        text(ctx, '🔥 FIRE', fx + fw / 2, fy + fh / 2, Math.round(22 * ts), '#fff', 'center');
+        this.uiRegions.fireBtn = { x: fx, y: fy, w: fw, h: fh };
       }
     }
-    // Pause + mute buttons (below the P2 card, so they never overlap it).
-    rr(ctx, W - 96, 86, 80, 28, 8); ctx.fillStyle = 'rgba(8,12,30,0.72)'; ctx.fill();
+    // Android v2 Tahap A — pause + camera are real buttons now (the old
+    // "II ESC" pill was text only). Camera toggles follow / zoom-out.
+    rr(ctx, W - 200, 86, 96, 28, 8);
+    ctx.fillStyle = flash === 'cam' ? 'rgba(126,200,247,0.9)' : 'rgba(8,12,30,0.72)'; ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.4)'; ctx.lineWidth = 1.5; ctx.stroke();
+    text(ctx, game.camMode === 'zoomout' ? '🎥 FOLLOW' : '🔍 ZOOM OUT', W - 152, 100, 11, '#fff', 'center');
+    this.uiRegions.camBtn = { x: W - 200, y: 86, w: 96, h: 28 };
+    rr(ctx, W - 96, 86, 80, 28, 8); ctx.fillStyle = flash === 'pause' ? 'rgba(126,200,247,0.9)' : 'rgba(8,12,30,0.72)'; ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.4)'; ctx.lineWidth = 1.5; ctx.stroke();
     text(ctx, 'II  ESC', W - 56, 100, 12, '#fff', 'center');
+    this.uiRegions.pauseBtn = { x: W - 96, y: 86, w: 80, h: 28 };
   }
   _playerCard(game, idx, x, y, right) {
     const ctx = this.ctx;
@@ -508,6 +589,20 @@ export class Renderer {
     ctx.globalAlpha = a;
     text(ctx, b.text, W / 2, 150, 44, b.color, 'center');
     if (b.sub) text(ctx, b.sub, W / 2, 192, 18, '#ffffff', 'center');
+    ctx.globalAlpha = 1;
+  }
+  // Android v2 Tahap A — animated turn banner: scales in at every turn
+  // change so the turn never switches silently.
+  _turnBanner(game) {
+    const ctx = this.ctx, b = game.turnBanner;
+    const a = b.t < 0.25 ? b.t / 0.25 : b.t > b.dur - 0.3 ? Math.max(0, (b.dur - b.t) / 0.3) : 1;
+    const scale = 0.7 + 0.3 * Math.min(1, b.t / 0.25);
+    ctx.save();
+    ctx.globalAlpha = a;
+    ctx.translate(W / 2, 250); ctx.scale(scale, scale);
+    text(ctx, b.text, 0, 0, 40, '#ffd76a', 'center');
+    if (b.sub) text(ctx, b.sub, 0, 38, 17, '#ffffff', 'center');
+    ctx.restore();
     ctx.globalAlpha = 1;
   }
 }

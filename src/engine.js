@@ -80,10 +80,13 @@ export function simulateShot(x, y, angleDeg, power, wind, opts = {}) {
   while (t < 6) {
     vx += windAcc * dt;
     if (opts.homing && opts.target) {
-      const tx = opts.target.x - px, ty = (opts.target.y - 20) - py;
+      // Android v2 Tahap A — the preview MUST match the real flight: the
+      // live update() steers with turn 2.4 toward (target.y - 40), so the
+      // simulator uses the exact same constants (it used 2.6 / -20 before).
+      const tx = opts.target.x - px, ty = (opts.target.y - 40) - py;
       const d = Math.hypot(tx, ty) || 1;
       const spNow = Math.hypot(vx, vy) || 1;
-      const turn = 2.6 * dt;
+      const turn = 2.4 * dt;
       vx += ((tx / d) * spNow - vx) * turn;
       vy += ((ty / d) * spNow - vy) * turn;
     }
@@ -92,7 +95,8 @@ export function simulateShot(x, y, angleDeg, power, wind, opts = {}) {
     points.push([px, py]);
     if (px < -40 || px > WORLD_W + 40 || py > H + 40) return { points, hitX: px, hitY: py, hit: 'none', t };
     for (const c of chars) {
-      const dx = px - c.x, dy = py - (c.y - 34);
+      // Live hit test in game.js uses (target.y - 40); match it here too.
+      const dx = px - c.x, dy = py - (c.y - 40);
       if (dx * dx + dy * dy < 34 * 34) return { points, hitX: px, hitY: py, hit: 'char', target: c, t };
     }
     if (!pierce && opts.terrain && py >= opts.terrain.groundY(px)) {

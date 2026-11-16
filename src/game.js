@@ -25,6 +25,19 @@ export class Game {
     this.camX = 0; this.showPreview = true; this.charging = false; this.chargeT = 0;
     this.fellDeath = false; // v3 — set when a hero falls into the abyss
     this.touchMode = false;
+    // Android v2 Tahap A — camera mode (follow / zoom-out), turn banner,
+    // lightning-chain FX, touch settings (NEW key, old keys untouched).
+    this.camMode = 'follow';
+    this.turnBanner = null;
+    this.lightningFx = [];
+    this.lastKnockback = null; this.lastFireWind = null; this.lastSlow = null;
+    this.lastChain = null; this.lastEarth = null;
+    this.touchSettings = { scale: 1, opacity: 0.85 };
+    try {
+      const t = JSON.parse(localStorage.getItem('arcane-duel-touch') || '{}');
+      if (typeof t.scale === 'number') this.touchSettings.scale = Math.min(1.3, Math.max(0.8, t.scale));
+      if (typeof t.opacity === 'number') this.touchSettings.opacity = Math.min(1, Math.max(0.5, t.opacity));
+    } catch (e) { /* ignore */ }
     // v3: weapon shop — owned set persists in localStorage.
     this.owned = new Set();
     try { const v = JSON.parse(localStorage.getItem('arcane-duel-shop-owned') || '[]'); if (Array.isArray(v)) this.owned = new Set(v); } catch (e) { /* ignore */ }
@@ -50,6 +63,33 @@ export class Game {
     this.emoteBubble = null; // v2.1
     this.camX = 0; this.charging = false; this.chargeT = 0; // v3
     this.fellDeath = false; // v3 — reset per battle
+    this.camMode = 'follow'; this.turnBanner = null; this.lightningFx = [];
+    this.lastKnockback = null; this.lastFireWind = null; this.lastSlow = null;
+    this.lastChain = null; this.lastEarth = null;
+  }
+  // Android v2 Tahap A — touch button size/opacity settings (own key).
+  setTouchSettings(scale, opacity) {
+    if (typeof scale === 'number') this.touchSettings.scale = Math.min(1.3, Math.max(0.8, scale));
+    if (typeof opacity === 'number') this.touchSettings.opacity = Math.min(1, Math.max(0.5, opacity));
+    try { localStorage.setItem('arcane-duel-touch', JSON.stringify(this.touchSettings)); } catch (e) { /* ignore */ }
+  }
+  // Android v2 Tahap A — camera toggle: follow the hero/projectile, or
+  // zoom out to show the whole 2048px arena at once.
+  toggleCamera() {
+    this.camMode = this.camMode === 'zoomout' ? 'follow' : 'zoomout';
+    this.setBanner(this.camMode === 'zoomout' ? '🔍 ZOOM OUT' : '🎥 CAMERA FOLLOW',
+      this.camMode === 'zoomout' ? 'Whole arena in view — tap again to follow' : 'Camera follows the action', 1.4, '#7ec8f7');
+    this.audio.click();
+    return this.camMode;
+  }
+  // Android v2 Tahap A — map a logical screen point (1280x720) to world
+  // coords, honouring the camera mode (follow adds camX; zoom-out unscales).
+  screenToWorld(sx, sy) {
+    if (this.camMode === 'zoomout') {
+      const z = 0.62, ox = (W - WORLD_W * z) / 2, oy = (H - H * z) / 2;
+      return { x: (sx - ox) / z, y: (sy - oy) / z };
+    }
+    return { x: sx + this.camX, y: sy };
   }
 
   // ------------------------------------------------------------ v3: weapon shop
@@ -92,7 +132,11 @@ export class Game {
     this.phase = 'aim'; this.phaseT = 0; this.turnTimer = TURN_TIME;
     this.turn = 0; this.players[0].energy = 30; this.players[1].energy = 30;
     this.camX = 0; // v3 — camera starts at the left edge (P1's side)
+    this.camMode = 'follow';
     this.setBanner(this.mode === 'training' ? 'TRAINING' : `${ARENAS[opts.arena].name.toUpperCase()}`, this._turnText(), 2.2);
+    // Android v2 Tahap A — animated turn banner (separate from the arena
+    // banner so a turn change is never silent).
+    this.turnBanner = { text: `${this.players[0].name}'S TURN`, sub: `${this.players[0].hero.name} — ${this.players[0].hero.title}`, t: 0, dur: 1.6 };
     if (opts.elite) this.setBanner('⚔ FINAL ROUND — ELITE ENEMY!', 'Elite Bront: 150 HP, harder hits, sharper aim!', 3.2, '#ff5a4e');
     this.audio.ensure(); this.audio.turn();
     if (this.ui.onTurn) this.ui.onTurn(this.turn);
@@ -187,6 +231,8 @@ export class Game {
     if (moved < 0.01) return false;
     p.x = nx; p.facing = dir; p.moveSteps = Math.max(0, p.moveSteps - moved);
     p.y = this.terrain.groundY(p.x);
+    // Android v2 Tahap A — walk animation state (renderer bobs + tilts).
+    p.walking = true; p.walkT = 0.18;
     return true;
   }
   aimFromMouse(mx, my) {
@@ -256,7 +302,7 @@ export class Game {
     if (full && fpMove) {
       this.setBanner(`🔥 ${fpMove.name.toUpperCase()}!`, `${p.hero.name} unleashes ${fpMove.name} — ${fpMove.desc}`, 2.0, '#ffd76a');
       this.audio.fullpower();
-    } else this.audio.shoot();
+    } else this.audio.shoot(weaponId); // Android v2 Tahap A — per-weapon shot sound
     // v3 — recoil: the hero is knocked back opposite the shot + camera shake.
     p.x = clamp(p.x - p.facing * 8, 40, WORLD_W - 40);
     p.y = this.terrain.groundY(p.x);
@@ -454,7 +500,13 @@ export class Game {
     this.turn = 1 - this.turn;
     const p = this.active();
     p.energy = clamp(p.energy + 25, 0, 100);
-    p.moveSteps = MOVE_STEPS; // v2: walking refills every turn
+    // Android v2 Tahap A — Ice SLOW: a beam-slowed hero gets half the walk
+    // steps on their next turn, then the status clears.
+    if (p.slowTurns > 0) {
+      p.moveSteps = Math.floor(MOVE_STEPS / 2);
+      p.slowTurns--;
+      this._floater(p.x, p.y - 150, 'SLOWED — half moves!', '#7ec8f7', 18);
+    } else p.moveSteps = MOVE_STEPS; // v2: walking refills every turn
     this.teleportMode = false; this.moveDir = 0;
     this.aiTelegraph = null; this.aiUtils = 0;
     for (const k of Object.keys(p.cds)) if (p.cds[k] > 0) p.cds[k]--;
@@ -491,6 +543,9 @@ export class Game {
     }
     if (this.ui.onTurn) this.ui.onTurn(this.turn);
     this.audio.turn();
+    // Android v2 Tahap A — every turn change gets a clear animated banner.
+    const ap = this.active();
+    this.turnBanner = { text: `${ap.name}'S TURN`, sub: `${ap.hero.name} — ${ap.hero.title}`, t: 0, dur: 1.6 };
   }
   _trainingTipText() {
     return ['Move the mouse to aim — the dotted line shows the flight path.',
@@ -529,13 +584,38 @@ export class Game {
   }
   explode(x, y, def, ownerIdx, opts = {}) {
     // def: {dmg, radius, elem}
-    const R = def.radius;
+    // Android v2 Tahap A — elemental interactions (see BUILD_LOG for the map):
+    // Fire+Wind: |wind|>=6 boosts a fire blast radius +25%.
+    // Earth: crater +30% deeper + small raised rims at the crater edges.
+    // Ice (beam): SLOW — see the damage loop below. Lightning (homing):
+    // chain — see below. Hero names/elements are unchanged.
+    const hpBefore = this.players.map(p => p.hp);
+    const fireWind = def.elem === 'fire' && Math.abs(this.wind) >= 6;
+    const isEarth = def.elem === 'earth';
+    const R = def.radius * (fireWind ? 1.25 : 1);
+    if (fireWind) {
+      this.lastFireWind = { x, y, radius: R, wind: this.wind };
+      this._floater(x, y - 60, 'FIRE+WIND!', '#ff9d5e', 22);
+      this.audio.firewind();
+    }
     this.audio.explosion(R > 70 ? 1.6 : 1);
     this.shake = Math.max(this.shake, R > 70 ? 12 : 7);
     this._burst(x, y, def.elem === 'fire' ? '#ff8c2f' : def.elem === 'arcane' ? '#a06bff' : def.elem === 'earth' ? '#8a7a5e' : '#ffb347', Math.round(R / 2.4));
     this._burst(x, y, '#3a3a3a', Math.round(R / 3), true);
-    // Terrain crater (not for beam).
-    if (!opts.noCrater) this.terrain.crater(x, y, R * 0.85);
+    // Terrain crater (not for beam). Earth digs deeper + shapes rims.
+    if (!opts.noCrater) {
+      const craterR = R * 0.85 * (isEarth ? 1.3 : 1);
+      this.terrain.crater(x, y, craterR);
+      if (isEarth) {
+        this.lastEarth = { x, y, craterR };
+        // Rims sit just OUTSIDE the crater (craterR + 24) so the crater
+        // itself never digs them back down; they rise 18px above the old ground.
+        this.terrain.raiseWall(x - craterR - 24, 40, 18);
+        this.terrain.raiseWall(x + craterR + 24, 40, 18);
+        this._burst(x - craterR - 24, this.terrain.groundY(x - craterR - 24) - 10, '#8a7a5e', 8);
+        this._burst(x + craterR + 24, this.terrain.groundY(x + craterR + 24) - 10, '#8a7a5e', 8);
+      }
+    }
     // Supply crates / barrels caught in the blast.
     for (const c of [...this.crates]) {
       if (Math.hypot(c.x - x, (c.y) - y) < R + 34) {
@@ -593,6 +673,61 @@ export class Game {
         this._damagePlayer(i, def.dmg * fall, x, y, def.elem);
       }
     }
+    // Android v2 Tahap A — knockback: a hero caught in a blast is shoved
+    // away from the blast point (bounded, never through terrain: the new
+    // spot is clamped to the world and re-grounded; a small hop follows
+    // the shove so the landing uses the normal falling rules).
+    for (let i = 0; i < 2; i++) {
+      const p = this.players[i];
+      if (!p.alive || p.hp >= hpBefore[i]) continue;
+      const d = Math.hypot(p.x - x, (p.y - 40) - y);
+      if (d >= R * 1.5) continue;
+      const dir = p.x >= x ? 1 : -1;
+      const shift = clamp(R * 0.25, 8, 36);
+      const nx = clamp(p.x + dir * shift, 40, WORLD_W - 40);
+      if (Math.abs(nx - p.x) >= 2) {
+        const dx = nx - p.x;
+        p.x = nx; p.y = this.terrain.groundY(p.x);
+        p.falling = true; p.fallStart = p.y; p.vy = -70;
+        this.lastKnockback = { player: i, dx, x: p.x };
+      }
+    }
+    // Android v2 Tahap A — Ice (Elemental Beam): a hero damaged by a beam
+    // is SLOWED for their next turn (half the walk steps, blue effect).
+    if (opts.slow) {
+      for (let i = 0; i < 2; i++) {
+        const p = this.players[i];
+        if (!p.alive || p.hp >= hpBefore[i]) continue;
+        p.slowTurns = 1;
+        this.lastSlow = { player: i, x: p.x };
+        this._floater(p.x, p.y - 150, 'SLOWED', '#7ec8f7', 20);
+        this._burst(p.x, p.y - 60, '#7ec8f7', 14);
+        this.audio.slow();
+      }
+    }
+    // Android v2 Tahap A — Lightning (Homing Orb): on impact, a small bolt
+    // chains to any OTHER hero within 120px (30% of the main damage).
+    if (opts.chain) {
+      for (let i = 0; i < 2; i++) {
+        if (i === opts.chainTarget) continue;
+        const p = this.players[i];
+        if (!p.alive) continue;
+        const d = Math.hypot(p.x - x, (p.y - 40) - y);
+        if (d > 120) continue;
+        const chainDmg = Math.round(def.dmg * 0.3);
+        this._damagePlayer(i, chainDmg, x, y, 'lightning');
+        this.lastChain = { from: { x, y }, to: { x: p.x, y: p.y - 40 }, dmg: chainDmg };
+        const pts = [];
+        for (let k = 0; k <= 6; k++) {
+          const t = k / 6;
+          pts.push([x + (p.x - x) * t + (k > 0 && k < 6 ? (Math.random() - 0.5) * 26 : 0),
+                    y + ((p.y - 40) - y) * t + (k > 0 && k < 6 ? (Math.random() - 0.5) * 26 : 0)]);
+        }
+        this.lightningFx.push({ pts, t: 0, dur: 0.4 });
+        this._floater(p.x, p.y - 150, `CHAIN ${chainDmg}!`, '#ffe08a', 18);
+        this.audio.lightning();
+      }
+    }
     // Falling heroes: if their ground dropped away, they drop.
     for (const p of this.players) {
       if (!p.alive) continue;
@@ -616,9 +751,24 @@ export class Game {
   // v2: the AI telegraphs its shot — it picks a plan, shows its aim line +
   // muzzle flash for ~1s (so the enemy shot is visible coming), then fires.
   // Plans: 'shoot' | 'skill1' | 'ult' | 'heal' | 'trap' | 'teleport' | 'move'.
+  // Android v2 Tahap A — terrain danger: is the AI standing next to a
+  // cliff / hole (ground drops steeply within 70px on either side)?
+  _aiTerrainDanger(p) {
+    const gyHere = this.terrain.groundY(p.x);
+    for (const dx of [-70, 70]) {
+      if (this.terrain.groundY(p.x + dx) > gyHere + 50) return true;
+    }
+    return false;
+  }
   _planAi() {
     const p = this.active(), foe = this.opponent();
     const diff = DIFFICULTY[this.campaignDiff || 'normal'];
+    // Android v2 Tahap A — terrain-aware: standing at a crater's edge is
+    // dangerous (a blast or a step could drop the AI in). Prefer walking
+    // back toward the centre instead of shooting from the edge.
+    if (this._aiTerrainDanger(p) && Math.random() < 0.75) {
+      return { kind: 'move', dx: p.x < 1024 ? 100 : -100 };
+    }
     if (p.energy >= 100 && Math.random() < 0.6) return { kind: 'ult' };
     if (this.aiUtils < 2) {
       if (p.hp <= 45 && p.energy >= HEAL_COST && Math.random() < 0.5) return { kind: 'heal' };
@@ -640,9 +790,24 @@ export class Game {
   }
   // v3 — AI weapon pick: the hero's signature weapon by default; special
   // weapons only if the AI "owns" them for its difficulty (shop set).
+  // Android v2 Tahap A — situational picks: far target + strong wind ->
+  // the most wind-resistant weapon owned; low-HP target -> the hardest
+  // hitter owned. Otherwise the old 30% random special pick.
   _aiPickWeapon(p) {
-    let wid = p.hero.basic.id;
+    const foe = this.opponent();
     const aiOwned = AI_SHOP_OWNED[this.campaignDiff || 'normal'] || [];
+    const owned = WEAPON_ORDER.filter(id =>
+      (FREE_WEAPONS.includes(id) || aiOwned.includes(id) || id === p.hero.basic.id) && p.ammo[id] > 0);
+    const dist = Math.abs(foe.x - p.x);
+    if (foe.hp <= 30 && owned.length) {
+      return owned.reduce((best, id) => (WEAPONS[id].dmg > WEAPONS[best].dmg ? id : best), owned[0]);
+    }
+    if (dist > 700 && Math.abs(this.wind) >= 5 && owned.length) {
+      return owned.reduce((best, id) =>
+        (WEAPONS[id].windRes > WEAPONS[best].windRes ||
+          (WEAPONS[id].windRes === WEAPONS[best].windRes && WEAPONS[id].dmg > WEAPONS[best].dmg) ? id : best), owned[0]);
+    }
+    let wid = p.hero.basic.id;
     const specials = ['meteor', 'homing', 'cluster', 'triple'].filter(id => p.ammo[id] > 0 && (FREE_WEAPONS.includes(id) || aiOwned.includes(id)));
     if (specials.length && Math.random() < 0.3) wid = specials[Math.floor(Math.random() * specials.length)];
     return wid;
@@ -717,6 +882,11 @@ export class Game {
   update(dt) {
     this.time += dt;
     if (this.banner) { this.banner.t += dt; if (this.banner.t > this.banner.dur) this.banner = null; }
+    // Android v2 Tahap A — animated turn banner + lightning FX lifetimes.
+    if (this.turnBanner) { this.turnBanner.t += dt; if (this.turnBanner.t > this.turnBanner.dur) this.turnBanner = null; }
+    for (const fx of this.lightningFx) fx.t += dt;
+    this.lightningFx = this.lightningFx.filter(fx => fx.t < fx.dur);
+    for (const p of this.players) if (p.walkT > 0) p.walkT -= dt;
     // v2.1: emote bubble lifetime.
     if (this.emoteBubble) { this.emoteBubble.t += dt; if (this.emoteBubble.t > this.emoteBubble.dur) this.emoteBubble = null; }
     this.shake = Math.max(0, this.shake - dt * 26);
@@ -966,7 +1136,10 @@ export class Game {
     }
     if (how === 'char' && target) {
       // Direct hit: full damage at the target point, plus blast.
-      this.explode(pr.x, pr.y, { dmg: def.dmg, radius: def.radius, elem: def.elem }, pr.owner);
+      // Android v2 Tahap A — beam slows, homing chains (see explode()).
+      const tgtIdx = this.players.indexOf(target);
+      this.explode(pr.x, pr.y, { dmg: def.dmg, radius: def.radius, elem: def.elem }, pr.owner,
+        { slow: pr.weapon === 'beam', chain: pr.weapon === 'homing', chainTarget: tgtIdx });
       // v3 — quake moves shatter the ground where they land.
       if (fpMove && fpMove.effect === 'quake') {
         this.terrain.crater(pr.x, this.terrain.groundY(pr.x), def.radius * 1.2);
@@ -976,7 +1149,7 @@ export class Game {
       // v2.1: a blast that hurts nobody shows a floating MISS.
       const hpBefore = this.players.map(p => p.hp);
       const shBefore = this.players.map(p => p.shield);
-      this.explode(pr.x, pr.y, def, pr.owner, { noCrater: pr.kind === 'beam' });
+      this.explode(pr.x, pr.y, def, pr.owner, { noCrater: pr.kind === 'beam', slow: pr.weapon === 'beam', chain: pr.weapon === 'homing', chainTarget: -1 });
       if (fpMove && fpMove.effect === 'quake') {
         this.terrain.crater(pr.x, this.terrain.groundY(pr.x), def.radius * 1.2);
         this.shake = Math.max(this.shake, 16);
@@ -994,9 +1167,13 @@ export class Game {
     const p = this.active();
     const m = this._muzzle(p);
     const w = WEAPONS[this.selectedWeapon];
-    const sim = simulateShot(m.x, m.y, this.worldAngle(), this.aim.power * POWER_VEL * (w ? w.speed : 1), this.wind * 10,
-      { terrain: this.terrain, chars: this.players.filter(pl => pl.alive).map(pl => ({ x: pl.x, y: pl.y, r: 34 })),
-        gravityMul: w ? (w.weight ?? 1) : 1, windMul: w ? (1 - (w.windRes ?? 0)) : 1 });
+    const opts = { terrain: this.terrain, chars: this.players.filter(pl => pl.alive).map(pl => ({ x: pl.x, y: pl.y, r: 34 })),
+      gravityMul: w ? (w.weight ?? 1) : 1, windMul: w ? (1 - (w.windRes ?? 0)) : 1 };
+    // Android v2 Tahap A — a homing preview must steer like a homing shot
+    // (same flags as the live flight), or preview != actual by design.
+    if (w && w.kind === 'homing') { opts.homing = true; opts.target = { x: this.opponent().x, y: this.opponent().y }; }
+    if (w && w.kind === 'beam') opts.noGravity = true; // weight 0 already zeroes it; explicit for clarity
+    const sim = simulateShot(m.x, m.y, this.worldAngle(), this.aim.power * POWER_VEL * (w ? w.speed : 1), this.wind * 10, opts);
     return sim.points.filter((_, i) => i % 3 === 0).slice(0, 26);
   }
 }

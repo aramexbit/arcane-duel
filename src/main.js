@@ -98,8 +98,13 @@ $('sel-start').onclick = () => {
   audio.ensure(); audio.click();
   if (sel.mode === 'versus' && sel.step === 1) { sel.step = 2; renderSelect(); return; }
   if (sel.mode === 'campaign') {
-    launchBattle({ mode: 'campaign', arena: CAMPAIGN[0].arena, p1Hero: sel.p1, p2Hero: CAMPAIGN[0].ai, p2AI: CAMPAIGN[0].diff, campaignIndex: 0, campaignTotal: CAMPAIGN.length });
-    game.campaignDiff = CAMPAIGN[0].diff;
+    // Android v2 Tahap A — the difficulty picked here drives battle 1
+    // (Expert included); later battles follow the CAMPAIGN table, and the
+    // elite final boss always stays elite. The default (Adept) keeps the
+    // original easy first battle.
+    const firstDiff = sel.diff === 'normal' ? CAMPAIGN[0].diff : sel.diff;
+    launchBattle({ mode: 'campaign', arena: CAMPAIGN[0].arena, p1Hero: sel.p1, p2Hero: CAMPAIGN[0].ai, p2AI: firstDiff, campaignIndex: 0, campaignTotal: CAMPAIGN.length });
+    game.campaignDiff = firstDiff;
   } else if (sel.mode === 'versus') {
     launchBattle({ mode: 'versus', arena: sel.arena, p1Hero: sel.p1, p2Hero: sel.p2, p2AI: null });
   } else if (sel.mode === 'training') {
@@ -160,10 +165,17 @@ $('credits-back').onclick = () => show('ov-menu');
 // ------------------------------------------------------------ settings
 function syncSettings() {
   $('set-music').value = audio.musicVol; $('set-sfx').value = audio.sfxVol; $('set-mute').checked = audio.muted;
+  // Android v2 Tahap A — touch button size + opacity (own storage key).
+  $('set-touch-scale').value = game.touchSettings.scale;
+  $('set-touch-opacity').value = game.touchSettings.opacity;
+  $('set-touch-scale-val').textContent = game.touchSettings.scale.toFixed(2) + '×';
+  $('set-touch-opacity-val').textContent = Math.round(game.touchSettings.opacity * 100) + '%';
 }
 $('set-music').oninput = e => audio.setMusic(+e.target.value);
 $('set-sfx').oninput = e => audio.setSfx(+e.target.value);
 $('set-mute').onchange = e => audio.setMuted(e.target.checked);
+$('set-touch-scale').oninput = e => { game.setTouchSettings(+e.target.value, undefined); $('set-touch-scale-val').textContent = (+e.target.value).toFixed(2) + '×'; };
+$('set-touch-opacity').oninput = e => { game.setTouchSettings(undefined, +e.target.value); $('set-touch-opacity-val').textContent = Math.round(+e.target.value * 100) + '%'; };
 $('set-back').onclick = () => show('ov-menu');
 
 // ------------------------------------------------------------ pause / game over

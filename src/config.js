@@ -150,6 +150,9 @@ export const DIFFICULTY = {
   easy:   { id: 'easy',   name: 'Apprentice', aimErr: 0.18, angErr: 8,  react: 1400, skillUse: 0.15 },
   normal: { id: 'normal', name: 'Adept',      aimErr: 0.08, angErr: 3,  react: 1100, skillUse: 0.35 },
   hard:   { id: 'hard',   name: 'Archmage',   aimErr: 0.02, angErr: 1,  react: 800,  skillUse: 0.55 },
+  // Android v2 Tahap A — Expert sits above hard, below elite (elite stays
+  // boss-only). Aim error is small but NEVER zero: the AI must not be perfect.
+  expert: { id: 'expert', name: 'Expert',     aimErr: 0.01, angErr: 0.5, react: 700, skillUse: 0.65 },
   elite:  { id: 'elite',  name: 'Elite',      aimErr: 0.01, angErr: 0.5, react: 600, skillUse: 0.70 },
 };
 
@@ -166,7 +169,7 @@ export const HEAL_AMOUNT = 25;      // HP restored
 export const ELITE_HP = 150;        // elite final-boss HP
 export const ELITE_DMG_MUL = 1.25;  // elite damage multiplier
 // v3 — AI shop ownership by difficulty (which shop weapons the AI may use).
-export const AI_SHOP_OWNED = { easy: [], normal: ['homing'], hard: ['homing', 'meteor', 'pierce'], elite: ['homing', 'meteor', 'pierce', 'cluster', 'beam', 'shield'] };
+export const AI_SHOP_OWNED = { easy: [], normal: ['homing'], hard: ['homing', 'meteor', 'pierce'], expert: ['homing', 'meteor', 'pierce', 'cluster'], elite: ['homing', 'meteor', 'pierce', 'cluster', 'beam', 'shield'] };
 
 // Deterministic RNG (mulberry32) for terrain + shots staging.
 export function rng(seed) {

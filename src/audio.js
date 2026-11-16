@@ -50,7 +50,27 @@ export class AudioSys {
     src.connect(f); f.connect(g); g.connect(this.sfxGain); src.start(t0);
   }
   click() { this._tone(660, 0.07, 'triangle', 0.25, 880); }
-  shoot() { this._noise(0.25, 0.5, 1800); this._tone(220, 0.2, 'sawtooth', 0.25, 60); }
+  // Android v2 Tahap A — one distinct shot sound per weapon family
+  // (WebAudio synth only, no files). kind/id selects the variant.
+  shoot(weaponId = 'cannon') {
+    if (weaponId === 'beam') { // high, clean zap
+      this._tone(1400, 0.18, 'sine', 0.3, 2400); this._noise(0.12, 0.25, 4200);
+    } else if (weaponId === 'boulder' || weaponId === 'horn') { // heavy, low thud
+      this._tone(70, 0.3, 'sine', 0.5, 40); this._noise(0.3, 0.5, 300);
+    } else if (weaponId === 'homing') { // shrill rising whine
+      this._tone(880, 0.25, 'sawtooth', 0.22, 1760); this._noise(0.15, 0.2, 2600);
+    } else if (weaponId === 'meteor' || weaponId === 'cluster') { // deep roar
+      this._tone(160, 0.25, 'sawtooth', 0.3, 50); this._noise(0.3, 0.5, 900);
+    } else if (weaponId === 'pierce' || weaponId === 'sting') { // sharp crack
+      this._noise(0.12, 0.45, 3200); this._tone(520, 0.12, 'square', 0.22, 180);
+    } else { // cannon / triple / moon / dart: classic boom
+      this._noise(0.25, 0.5, 1800); this._tone(220, 0.2, 'sawtooth', 0.25, 60);
+    }
+  }
+  // Android v2 Tahap A — elemental effect sounds.
+  slow() { this._tone(1250, 0.3, 'sine', 0.25, 620); this._tone(940, 0.35, 'sine', 0.2, 470, 0.08); } // ice chime
+  lightning() { this._noise(0.18, 0.6, 5200); this._tone(2100, 0.12, 'square', 0.3, 280); } // chain zap
+  firewind() { this._noise(0.4, 0.4, 900); this._tone(300, 0.3, 'sawtooth', 0.18, 950); } // wind-fed whoosh
   explosion(big = 1) {
     this._noise(0.6 * big, 0.8, 500); this._tone(90, 0.5 * big, 'sine', 0.7, 30);
     if (big > 1) this._noise(1.0, 0.6, 300, 0.08);
