@@ -592,10 +592,31 @@ export class Game {
     if (kind === 'trap' && this.traps.some(t => t.owner === this.turn)) return false;
     return true;
   }
-  useTeleport() {
-    if (this.state !== 'combat' || this.phase !== 'aim') return false;
+  // v3.1 teleport fix (user report 16 Nov: "T does nothing") — the happy
+  // path always worked (T -> click -> move), but a press at the WRONG
+  // moment failed SILENTLY: the key handler only ran in the aim phase on
+  // a human turn, so T during the enemy turn / mid-flight did nothing at
+  // all, and a NOT READY press only said "needs 30 energy" for 1.4s.
+  // `human` callers (key T, TELEPORT button) now always get an explaining
+  // banner; the AI calls without it and stays silent on failure.
+  useTeleport(human = false) {
+    if (this.state !== 'combat') return false;
     const p = this.active();
-    if (!this.utilityReady(p, 'teleport')) { this.setBanner('NOT READY', `Teleport needs ${this.teleportCost(p)} energy`, 1.4); return false; }
+    if (human && p.ai) { this.setBanner('⏳ ENEMY TURN', 'Wait for the enemy to finish their turn', 1.8); return false; }
+    if (this.phase !== 'aim') {
+      if (human) this.setBanner('⏳ NOT NOW', 'Wait for the shot to land first', 1.8);
+      return false;
+    }
+    if (!this.utilityReady(p, 'teleport')) {
+      if (human) {
+        const cd = p.cds.teleport || 0;
+        const sub = cd > 0
+          ? `Cooling down — ${cd} turn${cd > 1 ? 's' : ''} left • needs ${this.teleportCost(p)} energy (you have ${Math.floor(p.energy)})`
+          : `Needs ${this.teleportCost(p)} energy (you have ${Math.floor(p.energy)})`;
+        this.setBanner('NOT READY', sub, 2.0);
+      }
+      return false;
+    }
     this.teleportMode = true;
     this.setBanner('✨ TELEPORT', `Click a spot within ${TELEPORT_RANGE}px — Esc to cancel`, 2.5, '#c9a7ff');
     this.audio.click();

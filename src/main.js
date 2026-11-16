@@ -770,8 +770,20 @@ function toMenu() {
 }
 
 // ------------------------------------------------------------ input + loop
-// v3 — touch mode: real touch devices get the big FIRE button + D-pad.
-game.touchMode = ('ontouchstart' in window) || (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0);
+// v3.1 PC controls — PC-CONTROLS-v31: touch pads (joystick + AIM pad)
+// show only on touch-FIRST devices (phone/tablet). A touchscreen laptop is
+// still a PC: its primary pointer is the mouse (fine), so the pads stay
+// hidden there. (pointer: coarse) is the primary test; the maxTouchPoints
+// fallback covers touch devices that report no fine pointer at all.
+function detectTouchMode() {
+  try {
+    if (window.matchMedia('(pointer: coarse)').matches) return true;
+    if (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0
+      && !window.matchMedia('(pointer: fine)').matches) return true;
+  } catch (e) { /* media queries unavailable: assume desktop */ }
+  return false;
+}
+game.touchMode = detectTouchMode();
 new Input(canvas, game, renderer, togglePause);
 let last = performance.now();
 let fpsEma = 60; // Android v2 Tahap B — coarse FPS (EMA of rAF deltas).

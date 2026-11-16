@@ -485,7 +485,7 @@ export class Renderer {
     // onto a phone screen.
     const p0 = game.active();
     let wx = 16;
-    text(ctx, 'WEAPONS  [Q/E]', 16, H - 138, 12, '#ffd76a', 'left');
+    text(ctx, 'WEAPONS  [E]', 16, H - 138, 12, '#ffd76a', 'left');
     for (const id of WEAPON_ORDER) {
       const w = WEAPONS[id];
       const sel = game.selectedWeapon === id;

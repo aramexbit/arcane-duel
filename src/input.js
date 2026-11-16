@@ -8,6 +8,7 @@
 // visibility loss releases every input.
 // v3.1 Skin Feature — the big vertical POWER slider is GONE (it covered the
 // middle of the arena); power is set via the AIM pad / field drag / Space.
+import { FULL_POWER } from './config.js';
 export class Input {
   constructor(canvas, game, renderer, onPause) {
     this.canvas = canvas; this.game = game; this.renderer = renderer; this.onPause = onPause;
@@ -81,7 +82,7 @@ export class Input {
     for (const u of (this.renderer.uiRegions.utility || [])) {
       if (x >= u.x && x <= u.x + u.w && y >= u.y && y <= u.y + u.h) {
         this._flash('util:' + u.id);
-        if (u.id === 'teleport') g.useTeleport();
+        if (u.id === 'teleport') g.useTeleport(true);
         else if (u.id === 'trap') g.placeTrap();
         else if (u.id === 'heal') g.useHeal();
         else if (u.id === 'pass') g.passTurn();
@@ -314,13 +315,18 @@ export class Input {
         if (e.code === 'ArrowRight') g.nudgeAim(0, 2);
         // v3 — Space charges (hold) / fires on release; quick tap = fire now.
         if (e.code === 'Space') { e.preventDefault(); g.teleportMode = false; g.startCharge(); }
-        if (e.code === 'KeyQ') g.cycleWeapon(-1);
+        // v3.1 PC controls — Q is the POWER key now (user decision 16 Nov
+        // ~14:47): the SAME action as clicking the POW FIRE button — fire
+        // the FULL POWER move at power 100. Below 100 it does nothing,
+        // exactly like the button (which only exists at power 100).
+        // Weapon switching is E-only now (forward only, no backward).
+        if (e.code === 'KeyQ') { if (g.aim.power >= FULL_POWER) { this._flash('pow'); g.fire(); } }
         if (e.code === 'KeyE') g.cycleWeapon(1);
         if (e.code === 'Digit1') g.useSkill(1);
         if (e.code === 'Digit2') g.useSkill(2);
         if (e.code === 'Digit3') g.useSkill(3);
-        // v2 utilities: T teleport, R reflect trap, H heal.
-        if (e.code === 'KeyT') g.useTeleport();
+        // v2 utilities: R reflect trap, H heal. (T is handled below, outside
+        // the aim-phase block, so a mistimed press explains itself.)
         if (e.code === 'KeyR') g.placeTrap();
         if (e.code === 'KeyH') g.useHeal();
         // v2.1: P pass the turn, G emote (visual only, turn continues).
@@ -331,6 +337,11 @@ export class Input {
         // Android v2 Tahap A — C toggles the camera (follow / zoom-out).
         if (e.code === 'KeyC') g.toggleCamera();
       }
+      // v3.1 teleport fix — T runs OUTSIDE the aim-phase block: a press
+      // during the enemy turn or mid-flight now shows an explaining banner
+      // (ENEMY TURN / NOT NOW) instead of being silently ignored.
+      // useTeleport itself guards state/phase/energy/cooldown.
+      if (e.code === 'KeyT' && g.state === 'combat') g.useTeleport(true);
       if (e.code === 'Escape') {
         // v2 — Esc first cancels teleport targeting, then pauses.
         if (g.teleportMode) { g.cancelTeleport(); return; }
