@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#0b0e1e">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="data:,">
+<title>ARCANE DUEL — Warriors of the Lost Realm</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0b0e1e; font-family: 'Trebuchet MS', Verdana, sans-serif; }
+  /* Android v2 Tahap A — no browser zoom/scroll gestures on the game or
+     its buttons; overlays respect the notch / rounded corners. */
+  #wrap { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+  #game { width: min(100vw, 177.78vh); height: min(100vh, 56.25vw); display: block; background: #1a2340; box-shadow: 0 0 60px rgba(0,0,0,0.6); touch-action: none; }
+  .btn, .pick, .card { touch-action: none; }
+  .ov { padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+  #status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .ov { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: safe center; text-align: center; color: #fff; background: rgba(6,8,24,0.55); z-index: 5; overflow-y: auto; }
+  /* Android v2 Tahap B — overlays scroll on short screens (phone
+     landscape / the taller How to Play): safe center keeps the top
+     reachable instead of clipped, children never squash. */
+  .ov > * { flex-shrink: 0; }
+  .hidden { display: none !important; }
+  .panel { background: rgba(10,14,36,0.88); border: 2px solid #ffd76a; border-radius: 18px; padding: 28px 36px; max-width: 860px; box-shadow: 0 12px 50px rgba(0,0,0,0.6); }
+  h1 { font-size: 56px; margin: 0; letter-spacing: 4px; color: #ffd76a; text-shadow: 0 4px 0 #7a4a00, 0 8px 24px rgba(0,0,0,0.8); font-family: Georgia, serif; }
+  h2 { font-size: 30px; margin: 0 0 14px; color: #ffd76a; font-family: Georgia, serif; }
+  .sub { font-size: 17px; color: #d9b8ff; letter-spacing: 3px; margin: 6px 0 14px; }
+  .btn { display: block; width: 320px; margin: 6px auto; padding: 10px 20px; font-size: 18px; font-weight: bold; color: #1a1206; background: linear-gradient(#ffe08a, #ffb347); border: 2px solid #fff2c9; border-radius: 12px; cursor: pointer; font-family: inherit; }
+  .btn:hover { filter: brightness(1.12); transform: scale(1.02); }
+  .btn.ghost { background: rgba(255,255,255,0.12); color: #fff; border-color: rgba(255,255,255,0.5); }
+  .btn.small { width: auto; display: inline-block; padding: 9px 18px; font-size: 15px; margin: 6px; }
+  .cards { display: flex; gap: 16px; justify-content: center; margin: 10px 0 18px; }
+  .card { width: 200px; background: rgba(255,255,255,0.07); border: 3px solid rgba(255,255,255,0.25); border-radius: 14px; padding: 12px; cursor: pointer; }
+  .card:hover { transform: translateY(-3px); }
+  .card.sel { border-color: #ffd76a; background: rgba(255,215,106,0.18); box-shadow: 0 0 22px rgba(255,215,106,0.5); }
+  .card img { width: 120px; height: 150px; image-rendering: auto; }
+  .card h3 { margin: 6px 0 2px; font-size: 20px; }
+  .card .el { font-size: 13px; letter-spacing: 2px; color: #ffd76a; }
+  .card p { font-size: 13px; color: #ddd; margin: 6px 0; min-height: 54px; }
+  .pickrow { display: flex; gap: 10px; justify-content: center; margin: 8px 0; flex-wrap: wrap; }
+  .pick { padding: 9px 16px; border-radius: 10px; border: 2px solid rgba(255,255,255,0.35); background: rgba(255,255,255,0.08); color: #fff; cursor: pointer; font-weight: bold; font-family: inherit; }
+  .pick.sel { border-color: #ffd76a; background: rgba(255,215,106,0.25); }
+  .statline { font-size: 17px; margin: 5px 0; color: #eee; }
+  .howto { text-align: left; font-size: 15px; line-height: 1.65; color: #eee; max-width: 640px; }
+  .howto b { color: #ffd76a; }
+  label { font-size: 15px; display: block; margin: 10px 0; }
+  input[type=range] { width: 260px; }
+  .kbd { background: #222; border: 1px solid #888; border-radius: 5px; padding: 1px 7px; font-family: monospace; }
+  /* v3.1 P0 — overlays must fit a SHORT landscape viewport (phone Chrome
+     fullscreen is ~844x390 / 932x430 CSS px). The playtest showed the hero
+     cards + How to Play filling the whole screen, forcing the user to
+     scroll to reach Difficulty / Start Duel / Back. On short screens:
+     shrink everything, lay the menu out in two columns, clamp the card
+     flavour text, and pin the How to Play Back button below a scrolling
+     text area so it is always reachable without page scroll. */
+  @media (max-height: 500px) {
+    .ov { justify-content: flex-start; }
+    .panel { padding: 12px 16px; max-width: 94vw; }
+    h1 { font-size: 34px; letter-spacing: 2px; }
+    h2 { font-size: 22px; margin-bottom: 4px; }
+    .sub { font-size: 13px; letter-spacing: 2px; margin: 2px 0 6px; }
+    .btn { width: 260px; padding: 6px 14px; font-size: 15px; margin: 4px auto; }
+    /* Menu footer lines carry inline margins — tighten them on short screens. */
+    #ov-menu .menu-foot, #menu-coins, #menu-progress { margin-top: 4px !important; }
+    .btn.small { padding: 6px 12px; font-size: 13px; margin: 4px; }
+    /* Menu: 12 stacked buttons (~720px) never fit 390px — two columns do. */
+    #ov-menu .panel { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 10px; }
+    #ov-menu .btn { width: auto; margin: 2px 0; padding: 4px 12px; }
+    /* v3.1 Skin Feature — the 12th menu button (Skin Collection) pushed
+       the menu 18px past 390px (measured 408 vs 390). Tighten further:
+       smaller title, slimmer buttons, and hide the empty progress line. */
+    #ov-menu h1 { font-size: 28px; }
+    #menu-progress:empty { display: none; }
+    .cards { gap: 10px; margin: 4px 0 6px; }
+    .card { width: 120px; padding: 5px; }
+    .card img { width: 52px; height: 64px; }
+    .card h3 { margin: 2px 0 1px; font-size: 14px; }
+    .card .el { font-size: 10px; letter-spacing: 1px; }
+    .card p { font-size: 11px; margin: 2px 0; min-height: 0; line-height: 1.35;
+      display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; }
+    .card > div:last-child { font-size: 11px !important; line-height: 1.3 !important; }
+    .pickrow { margin: 2px 0; gap: 6px; }
+    .pick { padding: 4px 10px; font-size: 13px; }
+    .statline { font-size: 13px; margin: 2px 0; }
+    label { font-size: 13px; margin: 6px 0; }
+    input[type=range] { width: 200px; }
+    .howto { font-size: 12.5px; line-height: 1.5; }
+    /* How to Play: the text is long by nature — keep the panel inside the
+       viewport and let only the text scroll, so Back stays visible.
+       border-box is essential: without it max-height caps only the content
+       box and padding+border push the panel 28px past the viewport. */
+    #ov-howto .panel { max-height: calc(100vh - 16px); display: flex; flex-direction: column; flex-shrink: 1; min-height: 0; box-sizing: border-box; }
+    #ov-howto .howto { overflow-y: auto; min-height: 0; flex: 1 1 auto; }
+    #ov-howto .btn { flex-shrink: 0; }
+  }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="game" width="1280" height="720" aria-label="ARCANE DUEL: turn-based artillery fantasy duel"></canvas>
+  <p id="status" role="status" aria-live="polite"></p>
+
+  <div class="ov" id="ov-menu">
+    <h1>ARCANE DUEL</h1>
+    <div class="sub">— WARRIORS OF THE LOST REALM —</div>
+    <div class="panel" style="padding:18px 30px;">
+      <button class="btn" data-act="campaign">⚔️ Campaign</button>
+      <button class="btn hidden" data-act="continue">▶ Continue Campaign</button>
+      <button class="btn" data-act="survival">🌊 Survival</button>
+      <button class="btn" data-act="challenge">🏆 Challenges</button>
+      <button class="btn" data-act="versus">👥 Local Multiplayer</button>
+      <button class="btn" data-act="training">🎯 Training</button>
+      <button class="btn" data-act="shop">🛒 Weapon Shop</button>
+      <button class="btn" data-act="collection">🎨 Skin Collection</button>
+      <button class="btn ghost" data-act="howto">How to Play</button>
+      <button class="btn ghost" data-act="settings">Settings</button>
+      <button class="btn ghost" data-act="credits">Credits</button>
+      <button class="btn ghost" data-act="fullscreen">⛶ Fullscreen</button>
+    </div>
+    <div class="menu-foot" style="margin-top:14px;font-size:13px;color:#bbb;">Turn-based artillery fantasy • 2 players • Offline • An original game</div>
+    <div id="menu-coins" style="margin-top:8px;font-size:15px;color:#ffd76a;">🪙 0 Duel Coins</div>
+    <div id="menu-progress" style="margin-top:4px;font-size:14px;color:#7ec8f7;"></div>
+  </div>
+
+  <div class="ov hidden" id="ov-challenge">
+    <div class="panel">
+      <h2>🏆 Challenges</h2>
+      <div id="challenge-list" style="max-width:640px;"></div>
+      <button class="btn" id="challenge-back">Back</button>
+    </div>
+  </div>
+
+  <div class="ov hidden" id="ov-select">
+    <div class="panel">
+      <h2 id="sel-title">Choose Your Warrior</h2>
+      <div class="cards" id="sel-cards"></div>
+      <div id="sel-extra"></div>
+      <button class="btn" id="sel-start">Start Duel</button>
+      <button class="btn ghost small" id="sel-back">Back</button>
+    </div>
+  </div>
+
+  <div class="ov hidden" id="ov-pause">
+    <div class="panel">
+      <h2>Paused</h2>
+      <button class="btn" id="pause-resume">Resume</button>
+      <button class="btn ghost" id="pause-restart">Restart Battle</button>
+      <button class="btn ghost" id="pause-fullscreen">⛶ Fullscreen</button>
+      <button class="btn ghost" id="pause-quit">Quit to Menu</button>
+    </div>
+  </div>
+
+  <div class="ov hidden" id="ov-over">
+    <div class="panel">
+      <h2 id="over-title">Victory!</h2>
+      <div id="over-stats"></div>
+      <button class="btn" id="over-next">Next Battle</button>
+      <button class="btn" id="over-again">Play Again</button>
+      <button class="btn ghost" id="over-shop">🛒 Weapon Shop</button>
+      <button class="btn ghost" id="over-menu">Main Menu</button>
+    </div>
+  </div>
+
+  <div class="ov hidden" id="ov-shop">
+    <div class="panel">
+      <h2>🛒 Weapon Shop</h2>
+      <div id="shop-coins" style="font-size:15px;color:#ffd76a;margin-bottom:2px;">🪙 0 Duel Coins</div>
+      <div id="shop-gems" style="font-size:15px;color:#50dcf0;margin-bottom:6px;">💎 0 Gems</div>
+      <div class="pickrow" id="shop-tabs">
+        <button class="pick sel" id="shop-tab-weapons">🔫 Weapons</button>
+        <button class="pick" id="shop-tab-featured">⭐ Featured</button>
+        <button class="pick" id="shop-tab-skins">✨ Weapon Skins</button>
+      </div>
+      <div id="shop-list" style="max-width:640px;"></div>
+      <div id="shop-featured" class="hidden" style="max-width:640px;">
+        <div id="featured-content"></div>
+        <div id="featured-detail" style="background:rgba(255,255,255,0.06);border-radius:10px;padding:10px;margin:6px 0;">
+          <canvas id="featured-preview" width="320" height="180" style="border:2px solid #ffd76a;border-radius:10px;background:#0b0e1e;max-width:100%;"></canvas>
+          <div id="featured-preview-info" style="font-size:13px;color:#ddd;margin-top:6px;">This week's featured skin — preview plays automatically.</div>
+          <button class="btn small" id="featured-preview-sound">🔊 Replay Sound</button>
+        </div>
+      </div>
+      <div id="shop-skins" class="hidden" style="max-width:640px;">
+        <div class="pickrow" id="shop-skin-weapons"></div>
+        <div class="pickrow" id="shop-skin-filters"></div>
+        <div id="shop-skin-detail" style="background:rgba(255,255,255,0.06);border-radius:10px;padding:10px;margin:6px 0;">
+          <canvas id="skin-preview" width="320" height="180" style="border:2px solid #ffd76a;border-radius:10px;background:#0b0e1e;max-width:100%;"></canvas>
+          <div id="skin-preview-info" style="font-size:13px;color:#ddd;margin-top:6px;">Select a skin to preview its Full Power effect.</div>
+          <button class="btn small" id="skin-preview-sound">🔊 Replay Sound</button>
+        </div>
+        <div id="shop-skin-list"></div>
+      </div>
+      <button class="btn" id="shop-back">Back</button>
+    </div>
+  </div>
+
+  <div class="ov hidden" id="ov-collection">
+    <div class="panel">
+      <h2>🎨 Skin Collection</h2>
+      <div id="collection-gems" style="font-size:15px;color:#50dcf0;margin-bottom:6px;">💎 0 Gems</div>
+      <div class="pickrow" id="collection-weapons"></div>
+      <div class="pickrow" id="collection-filters"></div>
+      <div class="pickrow" id="collection-sort"></div>
+      <div id="collection-detail" style="background:rgba(255,255,255,0.06);border-radius:10px;padding:10px;margin:6px 0;max-width:640px;">
+        <canvas id="collection-preview" width="320" height="180" style="border:2px solid #ffd76a;border-radius:10px;background:#0b0e1e;max-width:100%;"></canvas>
+        <div id="collection-preview-info" style="font-size:13px;color:#ddd;margin-top:6px;">Select a skin to preview its Full Power effect.</div>
+        <button class="btn small" id="collection-preview-sound">🔊 Replay Sound</button>
+      </div>
+      <div id="collection-grid" style="max-width:640px;"></div>
+      <button class="btn" id="collection-back">Back</button>
+    </div>
+  </div>
+
+  <div class="ov hidden" id="ov-settings">
+    <div class="panel">
+      <h2>Settings</h2>
+      <label>🎵 Music volume <input type="range" id="set-music" min="0" max="1" step="0.05"></label>
+      <label>🔊 Sound effects <input type="range" id="set-sfx" min="0" max="1" step="0.05"></label>
+      <label><input type="checkbox" id="set-mute"> Mute all (M)</label>
+      <label>🕹️ Touch button size <input type="range" id="set-touch-scale" min="0.8" max="1.3" step="0.05"> <span id="set-touch-scale-val">1.00×</span></label>
+      <label>👻 Touch button opacity <input type="range" id="set-touch-opacity" min="0.5" max="1" step="0.05"> <span id="set-touch-opacity-val">85%</span></label>
+      <label>🎯 Aim sensitivity <input type="range" id="set-aim-sens" min="0.5" max="2" step="0.1"> <span id="set-aim-sens-val">1.0×</span></label>
+      <label>🎨 Graphics quality</label>
+      <div class="pickrow" id="set-quality">
+        <button class="pick" data-q="low">Low</button>
+        <button class="pick" data-q="medium">Medium</button>
+        <button class="pick" data-q="high">High</button>
+      </div>
+      <div style="font-size:13px;color:#bbb;">Low: few particles, no weather, small shake. High: full particles + weather + shake.</div>
+      <div style="margin-top:14px;">
+        <button class="btn small" id="set-export">⬇ Export Save</button>
+        <button class="btn small" id="set-import">⬆ Import Save</button>
+        <input type="file" id="set-import-file" accept=".json,application/json" style="display:none">
+        <div id="set-save-status" style="font-size:13px;color:#ffd76a;margin-top:6px;"></div>
+      </div>
+      <button class="btn" id="set-back">Back</button>
+    </div>
+  </div>
+
+  <div class="ov hidden" id="ov-credits">
+    <div class="panel">
+      <h2>Credits</h2>
+      <p class="statline">ARCANE DUEL: Warriors of the Lost Realm</p>
+      <p class="statline">An original game — characters, art, music and code created for the make.fun best-game-01 bounty.</p>
+      <p class="statline">Art: original procedural sprites drawn in code. Audio: Web Audio synthesis.</p>
+      <button class="btn" id="credits-back">Back</button>
+    </div>
+  </div>
+
+  <div class="ov hidden" id="ov-howto">
+    <div class="panel">
+      <h2>How to Play</h2>
+      <div class="howto">
+        <b>Goal:</b> Blast your rival to 0 HP before they blast you. Turns alternate — each shooting turn lasts <b>15 seconds</b>.<br>
+        <b>Delay queue:</b> every action costs time — the player with the lowest clock acts next. Light weapons are quick (Sting Dart +90), heavy ones are slow (Horn Cannon +160), skills +130, ultimate +200, Full Power shots +60 extra. A heavy action can let your rival act <b>twice</b> before you do — the turn banner says so ("⚡ TURN AGAIN!"). Passing (+60) and Shield (+60) are cheap, so you act sooner. The cost of your next shot is shown under your player card.<br>
+        <b>Aim sensitivity:</b> tune it in Settings (0.5× steady — 2.0× twitchy). It scales the AIM pad drag and field/mouse drag aim. At 0.5× a field drag builds power slowly — use the AIM pad or hold Space to charge to 100.<br>
+        <b>Aim:</b> Move the mouse — the dotted line previews your shot (fan shows the aim arc). <span class="kbd">↑</span><span class="kbd">↓</span> angle, <span class="kbd">←</span><span class="kbd">→</span> power (0–100). <span class="kbd">V</span> toggles the preview.<br>
+        <b>Move:</b> Hold <span class="kbd">A</span>/<span class="kbd">D</span> to walk (150 steps per turn). Reposition before you shoot!<br>
+        <b>Fire:</b> Click, tap the 🔥 FIRE button, or hold <span class="kbd">Space</span> to charge power then release to fire. Fire at POWER 100 for a golden <b>FULL POWER</b> move — a different special for every weapon! When POW burns, click the 🔥 POW FIRE! button or press <span class="kbd">Q</span>.<br>
+        <b>Weapons:</b> <span class="kbd">E</span> for the next weapon, or click the inventory. Every weapon has its own weight and wind resistance — heavy shots fall fast but ignore the wind, light shots drift. Buy more in the <b>🛒 Weapon Shop</b> with coins earned from wins.<br>
+        <b>Skills:</b> <span class="kbd">1</span> <span class="kbd">2</span> use skills (cost energy), <span class="kbd">3</span> ultimate — only at FULL energy.<br>
+        <b>Utilities:</b> <span class="kbd">T</span> Teleport — click a spot within range (Nyx: cheaper). <span class="kbd">R</span> Reflect Trap — enemy shots bounce back at them. <span class="kbd">H</span> Heal +25 HP. <b>Teleport and Heal END your turn</b> — no shooting after using one!<br>
+        <b>Pass / Emote:</b> <span class="kbd">P</span> Pass — skip your turn without shooting. <span class="kbd">G</span> Emote — show a fun bubble above your hero (free, turn continues).<br>
+        <b>Wind:</b> shown at the top — it pushes every projectile. Wind changes every turn.<br>
+        <b>Terrain:</b> explosions carve craters. Heroes fall if their ground is destroyed — blast the ground clean through and your rival <b>falls into the abyss and dies</b>!<br>
+        <b>Combo:</b> fire hitting a purple arcane zone triggers an ELEMENTAL COMBO blast!<br>
+        <b>Campaign:</b> beat 6 battles — beetles, wasps and shadow scorpions from the Mist Forest — then face the FINAL BOSS, Elite Bront with 150 HP! Your progress auto-saves — <b>Continue Campaign</b> on the menu resumes where you left off.<br>
+        <b>Survival:</b> endless waves, one foe per wave — each wave +10 HP and +5% damage for the enemy, difficulty climbing Apprentice → Elite. Every wave cleared pays +25 🪙. Your best wave is saved.<br>
+        <b>Challenges:</b> three fixed duels with a special win condition — <b>One-Shot</b> (win with a single shot), <b>No Miss</b> (win without a single MISS), <b>Speed Run</b> (win within 6 of your own turns). Complete one for +50 🪙.<br>
+        <b>Weather:</b> snow drifts in Crystal Valley, embers rise in Ember Canyon, light motes float in the Sky Temple. Graphics quality (Settings) controls particles and weather — Low turns weather off.<br>
+        <b>Offline:</b> the game installs as an app (PWA) and works fully offline after the first load. Export / Import your save from Settings.
+        <b>Touch (phone):</b> left virtual joystick to walk, drag on the field to aim, big 🔥 FIRE button. <b>🎯 AIM pad (left, above the joystick): hold it to aim — drag up for a higher arc, drag right for more power — release to fire!</b> Power is shown as a small bar above your hero. Tap <b>II</b> to pause, <b>🔍 ZOOM OUT</b> to see the whole arena (or press <span class="kbd">C</span>). Two fingers work at once — steer with one thumb, aim and fire with the other.<br>
+        <b>POINT / POW:</b> hitting the enemy fills your <b>POINT</b> meter (+8 per hit, +25 every turn). At <b>100 POINT</b> a 💥 <b>POW!</b> button appears — tap it to unleash your ultimate jurus!<br>
+        <b>Skins:</b> buy weapon skins in the <b>🛒 Weapon Shop</b> with 💎 <b>Gems</b> earned from battles — damage ÷ 2, +2 per hit, +50 win bonus, +25 per win in your win streak (loss: +10). The game-over screen shows the full breakdown. Skins are cosmetic only — they change the look, trail, explosion and sound, never the damage. Selecting a skin auto-plays its Full Power preview! <b>⭐ Featured:</b> one skin each week at 20% off. <b>🎨 Skin Collection:</b> browse everything you own, filter by rarity, equip from the collection.
+        <b>Elements:</b> strong wind (6+) feeds fire blasts (+25% radius, "FIRE+WIND!"). The Elemental Beam chills — a hit SLOWs the foe's next turn (half moves). Homing Orbs chain lightning to another hero within 120px. Earth blasts dig deeper craters and raise rims at the edges.<br>
+        <b>Pause:</b> <span class="kbd">Esc</span> or tap <b>II</b> &nbsp; <b>Mute:</b> <span class="kbd">M</span> &nbsp; <b>Camera:</b> <span class="kbd">C</span>
+      </div>
+      <button class="btn" id="howto-back">Back</button>
+    </div>
+  </div>
+</div>
+<script type="module" src="./src/main.js"></script>
+</body>
+</html>

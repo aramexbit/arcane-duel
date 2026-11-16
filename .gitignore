@@ -1,0 +1,12 @@
+out/
+.probe-tmp/
+tools/
+screenshots-landscape/
+screenshots-skins/
+screenshots-r3r4/
+screenshots-pc-controls/
+transcripts/
+AUDIT-v3.1.md
+SPEC-weapon-skins.md
+BOMB-HEROES-RESEARCH.md
+BUILD_LOG.md
