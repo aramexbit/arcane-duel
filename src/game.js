@@ -1,5 +1,5 @@
 // ARCANE DUEL — game state machine, combat, skills, ultimates, AI, combos.
-import { W, WORLD_W, H, GRAVITY, TURN_TIME, MAX_HP, HEROES, WEAPONS, WEAPON_ORDER, ARENAS, ARENA_ORDER, DIFFICULTY, MOVE_STEPS, MOVE_SPEED, TELEPORT_RANGE, TELEPORT_COST, TRAP_COST, TRAP_TURNS, TRAP_RADIUS, HEAL_COST, HEAL_AMOUNT, FULL_POWER, POWER_VEL, FULL_POWER_MOVES, SHOP_PRICES, FREE_WEAPONS, WIN_CREDITS, AI_SHOP_OWNED, ELITE_HP, ELITE_DMG_MUL, SURVIVAL_ROSTER, SURVIVAL_DIFFS, SURVIVAL_ARENAS, SURVIVAL_HP_PER_WAVE, SURVIVAL_DMG_PER_WAVE, CHALLENGES, SPEEDRUN_MAX_TURNS, QUALITY, clamp, rng } from './config.js';
+import { W, WORLD_W, H, GRAVITY, TURN_TIME, MAX_HP, CHAR_HIT_R, HEROES, WEAPONS, WEAPON_ORDER, ARENAS, ARENA_ORDER, DIFFICULTY, MOVE_STEPS, MOVE_SPEED, TELEPORT_RANGE, TELEPORT_COST, TRAP_COST, TRAP_TURNS, TRAP_RADIUS, HEAL_COST, HEAL_AMOUNT, FULL_POWER, POWER_VEL, FULL_POWER_MOVES, SHOP_PRICES, FREE_WEAPONS, WIN_CREDITS, AI_SHOP_OWNED, ELITE_HP, ELITE_DMG_MUL, SURVIVAL_ROSTER, SURVIVAL_DIFFS, SURVIVAL_ARENAS, SURVIVAL_HP_PER_WAVE, SURVIVAL_DMG_PER_WAVE, CHALLENGES, SPEEDRUN_MAX_TURNS, QUALITY, clamp, rng } from './config.js';
 import { Terrain, simulateShot, solveShot } from './engine.js';
 
 const SPRITE_W = 120, SPRITE_H = 150;
@@ -75,6 +75,7 @@ export class Game {
     this.aiTelegraph = null; this.aiUtils = 0;
     this.emoteBubble = null; // v2.1
     this.camX = 0; this.charging = false; this.chargeT = 0; // v3
+    this.aimHolding = false; this.aimPadKnob = { dx: 0, dy: 0 }; // v3.1 P0 — left aim pad state
     this.fellDeath = false; // v3 — reset per battle
     this.camMode = 'follow'; this.turnBanner = null; this.lightningFx = [];
     this.lastKnockback = null; this.lastFireWind = null; this.lastSlow = null;
@@ -170,6 +171,11 @@ export class Game {
     // opts: {mode, arena, p1Hero, p2Hero, p2AI (null|'easy'|'normal'|'hard'|'dummy'), campaignIndex}
     this.resetMeta();
     this.mode = opts.mode; this.state = 'combat';
+    // v3.1 P0 (B4) — reset the AI difficulty every battle: versus/training
+    // used to inherit a stale campaignDiff from the previous battle. The
+    // elite / survival / challenge branches below override this default,
+    // and launchCampaignBattle still sets it after startBattle.
+    this.campaignDiff = 'normal';
     this.campaignIndex = opts.campaignIndex ?? 0;
     this.campaignTotal = opts.campaignTotal || 6; // v3: 6 campaign battles
     const seed = (opts.seed ?? Math.floor(Math.random() * 1e9)) >>> 0;
@@ -262,6 +268,10 @@ export class Game {
   // spends no energy, does NOT end the turn).
   emote() {
     if (this.state !== 'combat' || this.phase !== 'aim') return false;
+    // v3.1 P0 (B2) — never show an emote bubble on the AI's turn (the
+    // keyboard path already blocked it; direct calls did not).
+    const p = this.active();
+    if (!p || p.ai) return false;
     const EMOTES = ['😤', '😂', '💪'];
     const emoji = EMOTES[Math.floor(Math.random() * EMOTES.length)];
     this.emoteBubble = { player: this.turn, emoji, t: 0, dur: 2.5 };
@@ -329,12 +339,21 @@ export class Game {
   }
   // v3 — touch drag aim: drag anywhere on the field; the drag vector from
   // the muzzle sets angle + power (Perjuangan Semut style: pull to aim).
+  // v3.1 P0 — the drag distance is normalised against the VISIBLE screen
+  // diagonal in world units (half-diagonal = power 100), not a fixed 0.11
+  // factor: on a phone the muzzle sits mid-screen, so the longest possible
+  // drag is only ~700 world px and could never reach power 100 (max ~77).
+  // A full-screen drag now reaches 100 in follow AND zoom-out mode; the
+  // mouse path (aimFromMouse) keeps its old factor — desktop behaviour
+  // is unchanged.
   aimFromTouch(tx, ty) {
     const p = this.active(), m = this._muzzle(p);
     const dx = (tx - m.x) * p.facing, dy = -(ty - m.y);
     if (Math.hypot(dx, dy) < 24) return;
     const ang = clamp(Math.atan2(dy, Math.max(1, dx)) * 180 / Math.PI, 0, 180);
-    const pw = clamp(Math.hypot(tx - m.x, ty - m.y) * 0.11, 5, 100);
+    const zoom = this.camMode === 'zoomout' ? 0.62 : 1;
+    const refDist = 0.5 * Math.hypot(W / zoom, H / zoom);
+    const pw = clamp(Math.hypot(tx - m.x, ty - m.y) / refDist * 100, 5, 100);
     this.setAim(ang, pw);
   }
   _muzzle(p) {
@@ -731,7 +750,7 @@ export class Game {
     }
     // Supply crates / barrels caught in the blast.
     for (const c of [...this.crates]) {
-      if (Math.hypot(c.x - x, (c.y) - y) < R + 34) {
+      if (Math.hypot(c.x - x, (c.y) - y) < R + CHAR_HIT_R) {
         this.crates.splice(this.crates.indexOf(c), 1);
         if (c.kind === 'crate') {
           // v3 — crates only restock weapons you own (locked shop weapons
@@ -990,7 +1009,13 @@ export class Game {
     this.banner = null; // clear any arena/turn banner behind the result screen
     this.players[winnerIdx].pose = 'victory';
     this.players[1 - winnerIdx].pose = 'defeat';
-    const won = this.mode === 'versus' ? true : winnerIdx === 0;
+    // v3.1 P0 (B1) — in versus, the winner is the player who actually won:
+    // the old `mode === 'versus' ? true` played the victory jingle (and
+    // flagged the result "won") even when Player 2 won the duel. The
+    // versus title in main.js already uses winnerName, so only the audio
+    // and the won flag change here.
+    const won = winnerIdx === 0;
+    this.lastWon = won; // v3.1 P0 (B1) — exposed so the probe can verify the versus flag (audio itself is not audible headless)
     if (won) this.audio.victory(); else this.audio.defeat();
     // Android v2 Tahap B — the loser cries out; the Challenge verdict is
     // decided here (win the duel AND meet the condition = complete).
@@ -1220,7 +1245,7 @@ export class Game {
         for (const tgt of [foe, own]) {
           if (!tgt.alive) continue;
           const dx = pr.x - tgt.x, dy = pr.y - (tgt.y - 40);
-          if (dx * dx + dy * dy < 36 * 36) { this._resolveHit(pr, tgt, 'char'); break; }
+          if (dx * dx + dy * dy < CHAR_HIT_R * CHAR_HIT_R) { this._resolveHit(pr, tgt, 'char'); break; }
         }
         if (pr.dead) continue;
         if (pr.x < -60 || pr.x > WORLD_W + 60 || pr.y > H + 60) { pr.dead = true; continue; }
@@ -1341,7 +1366,7 @@ export class Game {
     const p = this.active();
     const m = this._muzzle(p);
     const w = WEAPONS[this.selectedWeapon];
-    const opts = { terrain: this.terrain, chars: this.players.filter(pl => pl.alive).map(pl => ({ x: pl.x, y: pl.y, r: 34 })),
+    const opts = { terrain: this.terrain, chars: this.players.filter(pl => pl.alive).map(pl => ({ x: pl.x, y: pl.y, r: CHAR_HIT_R })),
       gravityMul: w ? (w.weight ?? 1) : 1, windMul: w ? (1 - (w.windRes ?? 0)) : 1 };
     // Android v2 Tahap A — a homing preview must steer like a homing shot
     // (same flags as the live flight), or preview != actual by design.

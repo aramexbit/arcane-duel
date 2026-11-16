@@ -12,7 +12,8 @@ export class Input {
     this.keys = new Set();
     this._lastMove = performance.now();
     // Android v2 Tahap A — active pointers: id -> { role, x0, y0, t, moved }
-    // roles: 'joystick' | 'aim' | 'slider'. FIRE/buttons resolve on down.
+    // roles: 'joystick' | 'aim' | 'slider' | 'aimpad' (v3.1 P0 — left AIM pad:
+    // hold to aim, drag to steer, release to fire). FIRE/buttons resolve on down.
     this.pointers = new Map();
     this._ptrDownAt = 0; this._ptrUpAt = 0;
     this._mouseSlider = false;
@@ -93,6 +94,10 @@ export class Input {
     if (inRect(r.powFire) || inRect(r.fireBtn) || inRect(r.powerSlider) || inRect(r.pauseBtn) || inRect(r.camBtn)) return true;
     const j = r.joystick;
     if (j && Math.hypot(x - j.cx, y - j.cy) <= j.grabR) return true;
+    // v3.1 P0 — the AIM pad is a HUD control too: the mouse must not
+    // re-aim when it passes over it.
+    const ap = r.aimPad;
+    if (ap && Math.hypot(x - ap.cx, y - ap.cy) <= ap.grabR) return true;
     for (const q of [...(r.weapons || []), ...(r.skills || []), ...(r.utility || [])]) if (inRect(q)) return true;
     return false;
   }
@@ -139,6 +144,18 @@ export class Input {
       this._sliderSetPower(y);
       return 'slider';
     }
+    // v3.1 P0 — left AIM pad (user request): hold to aim, drag to steer,
+    // release to fire. The drag is RELATIVE (like a joystick): dragging up
+    // raises the arc, dragging right adds power — so the aim never jumps
+    // when the pad is first touched (the pad sits ~500 world px left of
+    // the muzzle, an absolute read would yank the aim every time). The
+    // starting aim is remembered so the drag adjusts from it.
+    const ap = this.renderer.uiRegions.aimPad;
+    if (ap && g.phase === 'aim' && !g.active().ai && Math.hypot(x - ap.cx, y - ap.cy) <= ap.grabR) {
+      this.pointers.set(id, { role: 'aimpad', x0: x, y0: y, t: performance.now(), moved: false, angle0: g.aim.angle, power0: g.aim.power });
+      g.aimHolding = true; g.aimPadKnob = { dx: 0, dy: 0 };
+      return 'aimpad';
+    }
     if (this._hitRegions(x, y)) return null;
     if (g.teleportMode && g.phase === 'aim' && !g.active().ai) {
       const w = g.screenToWorld(x, y);
@@ -160,6 +177,16 @@ export class Input {
     const g = this.game;
     if (rec.role === 'joystick') this._joystickUpdate(x, y);
     else if (rec.role === 'slider') this._sliderSetPower(y);
+    else if (rec.role === 'aimpad') {
+      // v3.1 P0 — relative aim drag: up = higher arc, right = more power.
+      // Screen-relative (same for both heroes — the live preview shows
+      // the result). The knob follows the drag for visual feedback.
+      if (g.phase === 'aim' && !g.active().ai) {
+        const dx = x - rec.x0, dy = y - rec.y0;
+        g.aimPadKnob = { dx: Math.max(-60, Math.min(60, dx)), dy: Math.max(-60, Math.min(60, dy)) };
+        g.setAim(rec.angle0 + (-dy) * 0.35, rec.power0 + dx * 0.3);
+      }
+    }
     else if (rec.role === 'aim') {
       if (g.phase === 'aim' && !g.active().ai) {
         const w = g.screenToWorld(x, y);
@@ -173,6 +200,12 @@ export class Input {
     this.pointers.delete(id);
     if (!rec) return;
     if (rec.role === 'joystick') this._joystickRelease();
+    else if (rec.role === 'aimpad') {
+      // v3.1 P0 — releasing the AIM pad fires the aimed shot.
+      const g = this.game;
+      g.aimHolding = false; g.aimPadKnob = { dx: 0, dy: 0 };
+      if (g.phase === 'aim' && !g.active().ai) g.fire();
+    }
     else if (rec.role === 'aim') {
       const quick = performance.now() - rec.t < 250 && !rec.moved;
       if (quick) {
@@ -189,6 +222,7 @@ export class Input {
     this._mouseSlider = false;
     const g = this.game;
     g.moveDir = 0; g.joystick = { dx: 0, dy: 0 }; g.charging = false;
+    g.aimHolding = false; g.aimPadKnob = { dx: 0, dy: 0 }; // v3.1 P0 — a held aim must never survive an app switch
   }
   _bind() {
     const g = this.game, c = this.canvas;
@@ -244,7 +278,11 @@ export class Input {
     c.addEventListener('pointercancel', e => {
       if (e.pointerType !== 'touch' && e.pointerType !== 'pen') return;
       this._ptrUpAt = Date.now();
+      const rec = this.pointers.get('p' + e.pointerId);
       this.pointers.delete('p' + e.pointerId);
+      // v3.1 P0 — a cancelled AIM-pad hold lets go WITHOUT firing (the
+      // system took the gesture away; the player did not choose to shoot).
+      if (rec && rec.role === 'aimpad') { this.game.aimHolding = false; this.game.aimPadKnob = { dx: 0, dy: 0 }; }
       this._joystickRelease();
     });
     // ---- Legacy TouchEvent fallback (no Pointer Events in this WebView,

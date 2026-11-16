@@ -47,6 +47,48 @@
   label { font-size: 15px; display: block; margin: 10px 0; }
   input[type=range] { width: 260px; }
   .kbd { background: #222; border: 1px solid #888; border-radius: 5px; padding: 1px 7px; font-family: monospace; }
+  /* v3.1 P0 — overlays must fit a SHORT landscape viewport (phone Chrome
+     fullscreen is ~844x390 / 932x430 CSS px). The playtest showed the hero
+     cards + How to Play filling the whole screen, forcing the user to
+     scroll to reach Difficulty / Start Duel / Back. On short screens:
+     shrink everything, lay the menu out in two columns, clamp the card
+     flavour text, and pin the How to Play Back button below a scrolling
+     text area so it is always reachable without page scroll. */
+  @media (max-height: 500px) {
+    .ov { justify-content: flex-start; }
+    .panel { padding: 12px 16px; max-width: 94vw; }
+    h1 { font-size: 34px; letter-spacing: 2px; }
+    h2 { font-size: 22px; margin-bottom: 4px; }
+    .sub { font-size: 13px; letter-spacing: 2px; margin: 2px 0 6px; }
+    .btn { width: 260px; padding: 6px 14px; font-size: 15px; margin: 4px auto; }
+    /* Menu footer lines carry inline margins — tighten them on short screens. */
+    #ov-menu .menu-foot, #menu-coins, #menu-progress { margin-top: 4px !important; }
+    .btn.small { padding: 6px 12px; font-size: 13px; margin: 4px; }
+    /* Menu: 11 stacked buttons (~720px) never fit 390px — two columns do. */
+    #ov-menu .panel { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 10px; }
+    #ov-menu .btn { width: auto; margin: 3px 0; }
+    .cards { gap: 10px; margin: 4px 0 6px; }
+    .card { width: 120px; padding: 5px; }
+    .card img { width: 52px; height: 64px; }
+    .card h3 { margin: 2px 0 1px; font-size: 14px; }
+    .card .el { font-size: 10px; letter-spacing: 1px; }
+    .card p { font-size: 11px; margin: 2px 0; min-height: 0; line-height: 1.35;
+      display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; }
+    .card > div:last-child { font-size: 11px !important; line-height: 1.3 !important; }
+    .pickrow { margin: 2px 0; gap: 6px; }
+    .pick { padding: 4px 10px; font-size: 13px; }
+    .statline { font-size: 13px; margin: 2px 0; }
+    label { font-size: 13px; margin: 6px 0; }
+    input[type=range] { width: 200px; }
+    .howto { font-size: 12.5px; line-height: 1.5; }
+    /* How to Play: the text is long by nature — keep the panel inside the
+       viewport and let only the text scroll, so Back stays visible.
+       border-box is essential: without it max-height caps only the content
+       box and padding+border push the panel 28px past the viewport. */
+    #ov-howto .panel { max-height: calc(100vh - 16px); display: flex; flex-direction: column; flex-shrink: 1; min-height: 0; box-sizing: border-box; }
+    #ov-howto .howto { overflow-y: auto; min-height: 0; flex: 1 1 auto; }
+    #ov-howto .btn { flex-shrink: 0; }
+  }
 </style>
 </head>
 <body>
@@ -70,7 +112,7 @@
       <button class="btn ghost" data-act="credits">Credits</button>
       <button class="btn ghost" data-act="fullscreen">⛶ Fullscreen</button>
     </div>
-    <div style="margin-top:14px;font-size:13px;color:#bbb;">Turn-based artillery fantasy • 2 players • Offline • An original game</div>
+    <div class="menu-foot" style="margin-top:14px;font-size:13px;color:#bbb;">Turn-based artillery fantasy • 2 players • Offline • An original game</div>
     <div id="menu-coins" style="margin-top:8px;font-size:15px;color:#ffd76a;">🪙 0 Duel Coins</div>
     <div id="menu-progress" style="margin-top:4px;font-size:14px;color:#7ec8f7;"></div>
   </div>
@@ -178,7 +220,7 @@
         <b>Challenges:</b> three fixed duels with a special win condition — <b>One-Shot</b> (win with a single shot), <b>No Miss</b> (win without a single MISS), <b>Speed Run</b> (win within 6 of your own turns). Complete one for +50 🪙.<br>
         <b>Weather:</b> snow drifts in Crystal Valley, embers rise in Ember Canyon, light motes float in the Sky Temple. Graphics quality (Settings) controls particles and weather — Low turns weather off.<br>
         <b>Offline:</b> the game installs as an app (PWA) and works fully offline after the first load. Export / Import your save from Settings.
-        <b>Touch (phone):</b> left virtual joystick to walk, drag on the field to aim, vertical POWER slider on the right edge, big 🔥 FIRE button. Tap <b>II</b> to pause, <b>🔍 ZOOM OUT</b> to see the whole arena (or press <span class="kbd">C</span>). Two fingers work at once — steer with one thumb, aim and fire with the other.<br>
+        <b>Touch (phone):</b> left virtual joystick to walk, drag on the field to aim, vertical POWER slider on the right edge, big 🔥 FIRE button. <b>🎯 AIM pad (left, above the joystick): hold it to aim — drag up for a higher arc, drag right for more power — release to fire!</b> Tap <b>II</b> to pause, <b>🔍 ZOOM OUT</b> to see the whole arena (or press <span class="kbd">C</span>). Two fingers work at once — steer with one thumb, aim and fire with the other.<br>
         <b>Elements:</b> strong wind (6+) feeds fire blasts (+25% radius, "FIRE+WIND!"). The Elemental Beam chills — a hit SLOWs the foe's next turn (half moves). Homing Orbs chain lightning to another hero within 120px. Earth blasts dig deeper craters and raise rims at the edges.<br>
         <b>Pause:</b> <span class="kbd">Esc</span> or tap <b>II</b> &nbsp; <b>Mute:</b> <span class="kbd">M</span> &nbsp; <b>Camera:</b> <span class="kbd">C</span>
       </div>

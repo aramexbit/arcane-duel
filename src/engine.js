@@ -1,5 +1,5 @@
 // ARCANE DUEL — terrain (destructible heightmap) + ballistic physics + AI solver.
-import { W, WORLD_W, H, GRAVITY, ARENAS, rng, clamp } from './config.js';
+import { W, WORLD_W, H, GRAVITY, CHAR_HIT_R, ARENAS, rng, clamp } from './config.js';
 
 export class Terrain {
   constructor(arenaId, seed = 1) {
@@ -97,7 +97,7 @@ export function simulateShot(x, y, angleDeg, power, wind, opts = {}) {
     for (const c of chars) {
       // Live hit test in game.js uses (target.y - 40); match it here too.
       const dx = px - c.x, dy = py - (c.y - 40);
-      if (dx * dx + dy * dy < 34 * 34) return { points, hitX: px, hitY: py, hit: 'char', target: c, t };
+      if (dx * dx + dy * dy < CHAR_HIT_R * CHAR_HIT_R) return { points, hitX: px, hitY: py, hit: 'char', target: c, t };
     }
     if (!pierce && opts.terrain && py >= opts.terrain.groundY(px)) {
       return { points, hitX: px, hitY: Math.min(py, opts.terrain.groundY(px)), hit: 'terrain', t };

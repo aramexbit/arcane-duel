@@ -12,6 +12,10 @@ export const MAX_HP = 100;
 // stay identical under the hood.
 export const POWER_VEL = 9.5;
 export const FULL_POWER = 100;      // v3 — POW at power 100 (was 950)
+// v3.1 P0 (B5) — ONE character hit radius, shared by the live loop, the
+// preview simulator and the blast damage test (was 34 in the preview,
+// 36 live — a 2px mismatch in the "same physics" claim).
+export const CHAR_HIT_R = 36;
 
 export const HEROES = {
   kairo: {

@@ -399,7 +399,7 @@ export class Renderer {
   }
   _hud(game, now) {
     const ctx = this.ctx;
-    this.uiRegions = { weapons: [], skills: [], utility: [], powFire: null, fireBtn: null, dpad: [], joystick: null, powerSlider: null, pauseBtn: null, camBtn: null };
+    this.uiRegions = { weapons: [], skills: [], utility: [], powFire: null, fireBtn: null, dpad: [], joystick: null, powerSlider: null, pauseBtn: null, camBtn: null, aimPad: null };
     // Touch press feedback: a button tapped <180ms ago draws highlighted.
     const flash = game.pressFlash && (Date.now() - game.pressFlash.t) < 180 ? game.pressFlash.key : null;
     // Top player cards.
@@ -441,8 +441,10 @@ export class Renderer {
       ctx.strokeStyle = 'rgba(255,255,255,0.35)'; ctx.lineWidth = 1.5; ctx.stroke();
       text(ctx, `ANGLE ${Math.round(game.aim.angle)}°    POWER ${pow}${pow >= FULL_POWER ? '  ★ FULL POWER!' : ''}`, W / 2, 104, 14, pow >= FULL_POWER ? '#ffd76a' : '#ffffff', 'center');
       bar(ctx, W / 2 - 140, 118, 280, 7, pow / 100, pow >= FULL_POWER ? '#ffd76a' : '#ff7a2f');
-      // v2 — walk meter under the aim readout.
-      text(ctx, `MOVE [A/D]: ${Math.round(p.moveSteps)}px left this turn`, W / 2, 140, 11, '#bfe9ff', 'center');
+      // v3.1 P0 — the MOVE line used to sit at y=140, directly under the
+      // 44px banner text at y=150, so the banner painted over it. It now
+      // lives below the banner zone (banner text + sub end ~y=201).
+      text(ctx, `MOVE [A/D]: ${Math.round(p.moveSteps)}px left this turn`, W / 2, 210, 11, '#bfe9ff', 'center');
       // v3 — charging indicator while Space is held.
       if (game.charging) text(ctx, '⚡ CHARGING… release SPACE to fire!', W / 2, 156, 13, '#ffd76a', 'center');
       // Android v2 Tahap A — SPECIAL READY must be obvious on mobile too.
@@ -454,7 +456,7 @@ export class Renderer {
     // Android v2 Tahap B — challenge goal + live status under the aim readout.
     const chStatus = game.challengeStatus();
     if (chStatus && game.state === 'combat') {
-      text(ctx, chStatus, W / 2, 210, 13, game.challengeFailed ? '#ff5a4e' : '#ffd76a', 'center');
+      text(ctx, chStatus, W / 2, 228, 13, game.challengeFailed ? '#ff5a4e' : '#ffd76a', 'center');
     }
     // Weapon inventory (bottom left) — Android v2 Tahap A: slots 58 -> 64px
     // so they stay finger-friendly when the 1280px canvas is letterboxed
@@ -570,6 +572,25 @@ export class Renderer {
         ctx.globalAlpha = 1;
         text(ctx, '◀ ▶', jcx, jcy + jr + 16, 12, 'rgba(255,255,255,0.8)', 'center');
         this.uiRegions.joystick = { cx: jcx, cy: jcy, r: jr, grabR: jr + 34 };
+        // v3.1 P0 — left AIM pad (above the joystick, so the two thumbs
+        // never fight over one zone): hold to aim, drag to steer, release
+        // to fire. The knob follows the drag offset; the pad glows gold
+        // while held. Its grab zone ends ~24px above the joystick's.
+        const apcx = 112, apcy = 268, apr = 62 * ts, apGrab = apr + 20;
+        ctx.globalAlpha = op;
+        ctx.beginPath(); ctx.arc(apcx, apcy, apr, 0, Math.PI * 2);
+        ctx.fillStyle = game.aimHolding ? 'rgba(255,215,106,0.35)' : 'rgba(8,12,30,0.55)'; ctx.fill();
+        ctx.strokeStyle = game.aimHolding ? '#ffd76a' : 'rgba(255,255,255,0.6)'; ctx.lineWidth = game.aimHolding ? 3.5 : 2.5; ctx.stroke();
+        const knob = game.aimPadKnob || { dx: 0, dy: 0 };
+        const kx2 = apcx + Math.max(-1, Math.min(1, knob.dx / 60)) * apr * 0.55;
+        const ky2 = apcy + Math.max(-1, Math.min(1, knob.dy / 60)) * apr * 0.55;
+        ctx.beginPath(); ctx.arc(kx2, ky2, 22 * ts, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(255,215,106,0.9)'; ctx.fill();
+        ctx.strokeStyle = '#fff'; ctx.lineWidth = 2.5; ctx.stroke();
+        ctx.globalAlpha = 1;
+        text(ctx, '🎯 AIM', apcx, apcy - apr - 8, 12, '#ffd76a', 'center');
+        text(ctx, 'hold • drag • release to fire', apcx, apcy + apr + 16, 10, 'rgba(255,255,255,0.8)', 'center');
+        this.uiRegions.aimPad = { cx: apcx, cy: apcy, r: apr, grabR: apGrab };
         // Vertical power slider: drag up = more power.
         const sw = 34, sh = 170, sx0 = 1044, sy0 = 300;
         const pow = game.aim.power;
