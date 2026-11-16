@@ -125,7 +125,7 @@ export const FULL_POWER_MOVES = {
 // cannon + triple are free; the rest are bought once, owned forever.
 export const SHOP_PRICES = { meteor: 150, homing: 120, pierce: 150, cluster: 180, beam: 200, shield: 100 };
 export const FREE_WEAPONS = ['cannon', 'triple'];
-export const WIN_CREDITS = { campaign: 100, versus: 50, training: 0 };
+export const WIN_CREDITS = { campaign: 100, versus: 50, training: 0, survival: 25, challenge: 50 };
 
 export const ARENAS = {
   valley: {
@@ -170,6 +170,34 @@ export const ELITE_HP = 150;        // elite final-boss HP
 export const ELITE_DMG_MUL = 1.25;  // elite damage multiplier
 // v3 — AI shop ownership by difficulty (which shop weapons the AI may use).
 export const AI_SHOP_OWNED = { easy: [], normal: ['homing'], hard: ['homing', 'meteor', 'pierce'], expert: ['homing', 'meteor', 'pierce', 'cluster'], elite: ['homing', 'meteor', 'pierce', 'cluster', 'beam', 'shield'] };
+
+// Android v2 Tahap B — Survival: endless waves, one foe per wave.
+// The roster rotates through the 5 non-boss foes; every 5th wave is the
+// Elite boss. HP +10/wave, damage +5%/wave, AI difficulty climbs
+// easy -> normal -> hard -> expert -> elite (stays elite after wave 5).
+export const SURVIVAL_ROSTER = ['kumbang', 'nyx', 'tawon', 'momok', 'bront'];
+export const SURVIVAL_DIFFS = ['easy', 'normal', 'hard', 'expert', 'elite'];
+export const SURVIVAL_ARENAS = ['valley', 'canyon', 'temple'];
+export const SURVIVAL_HP_PER_WAVE = 10;
+export const SURVIVAL_DMG_PER_WAVE = 0.05;
+export const SURVIVAL_WIN_COINS = 25;
+
+// Android v2 Tahap B — Challenges: fixed duels vs a normal AI with a
+// special win condition. 'turns' counts the PLAYER's own turns only.
+export const CHALLENGES = {
+  oneshot: { id: 'oneshot', name: 'One-Shot', icon: '🎯', desc: 'Defeat the enemy with a single shot. One miss and the challenge is lost.' },
+  nomiss: { id: 'nomiss', name: 'No Miss', icon: '💯', desc: 'Win the duel without a single MISS — every shot must hurt someone.' },
+  speedrun: { id: 'speedrun', name: 'Speed Run', icon: '⏱️', desc: 'Win within 6 of your own turns. Slow and steady loses this one.' },
+};
+export const CHALLENGE_ORDER = ['oneshot', 'nomiss', 'speedrun'];
+export const SPEEDRUN_MAX_TURNS = 6;
+
+// Android v2 Tahap B — graphics quality: particle caps + weather + shake.
+export const QUALITY = {
+  low: { name: 'Low', particles: 40, weather: 0, shakeMax: 4 },
+  medium: { name: 'Medium', particles: 120, weather: 1, shakeMax: 10 },
+  high: { name: 'High', particles: 250, weather: 2, shakeMax: 20 },
+};
 
 // Deterministic RNG (mulberry32) for terrain + shots staging.
 export function rng(seed) {

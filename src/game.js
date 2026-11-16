@@ -1,5 +1,5 @@
 // ARCANE DUEL — game state machine, combat, skills, ultimates, AI, combos.
-import { W, WORLD_W, H, GRAVITY, TURN_TIME, MAX_HP, HEROES, WEAPONS, WEAPON_ORDER, ARENAS, ARENA_ORDER, DIFFICULTY, MOVE_STEPS, MOVE_SPEED, TELEPORT_RANGE, TELEPORT_COST, TRAP_COST, TRAP_TURNS, TRAP_RADIUS, HEAL_COST, HEAL_AMOUNT, FULL_POWER, POWER_VEL, FULL_POWER_MOVES, SHOP_PRICES, FREE_WEAPONS, WIN_CREDITS, AI_SHOP_OWNED, ELITE_HP, ELITE_DMG_MUL, clamp, rng } from './config.js';
+import { W, WORLD_W, H, GRAVITY, TURN_TIME, MAX_HP, HEROES, WEAPONS, WEAPON_ORDER, ARENAS, ARENA_ORDER, DIFFICULTY, MOVE_STEPS, MOVE_SPEED, TELEPORT_RANGE, TELEPORT_COST, TRAP_COST, TRAP_TURNS, TRAP_RADIUS, HEAL_COST, HEAL_AMOUNT, FULL_POWER, POWER_VEL, FULL_POWER_MOVES, SHOP_PRICES, FREE_WEAPONS, WIN_CREDITS, AI_SHOP_OWNED, ELITE_HP, ELITE_DMG_MUL, SURVIVAL_ROSTER, SURVIVAL_DIFFS, SURVIVAL_ARENAS, SURVIVAL_HP_PER_WAVE, SURVIVAL_DMG_PER_WAVE, CHALLENGES, SPEEDRUN_MAX_TURNS, QUALITY, clamp, rng } from './config.js';
 import { Terrain, simulateShot, solveShot } from './engine.js';
 
 const SPRITE_W = 120, SPRITE_H = 150;
@@ -41,6 +41,19 @@ export class Game {
     // v3: weapon shop — owned set persists in localStorage.
     this.owned = new Set();
     try { const v = JSON.parse(localStorage.getItem('arcane-duel-shop-owned') || '[]'); if (Array.isArray(v)) this.owned = new Set(v); } catch (e) { /* ignore */ }
+    // Android v2 Tahap B — graphics quality (own field inside the shared
+    // settings key; audio.save() merges instead of overwriting).
+    this.quality = 'medium';
+    try {
+      const s = JSON.parse(localStorage.getItem('arcane-duel-settings') || '{}');
+      if (s.quality && QUALITY[s.quality]) this.quality = s.quality;
+    } catch (e) { /* ignore */ }
+    // Android v2 Tahap B — Survival best wave + completed challenges.
+    this.survivalBest = 0;
+    try { this.survivalBest = parseInt(localStorage.getItem('arcane-duel-survival-best') || '0', 10) || 0; } catch (e) { /* ignore */ }
+    this.challengesDone = new Set();
+    try { const v = JSON.parse(localStorage.getItem('arcane-duel-challenges') || '[]'); if (Array.isArray(v)) this.challengesDone = new Set(v); } catch (e) { /* ignore */ }
+    this.showFps = false; // Android v2 Tahap B — set from ?fps=1 in main.js
     // Facebook-era flavour, original implementation: Duel Coins persist
     // across sessions; crates/barrels drop into the arena every few turns.
     this.crates = [];
@@ -66,6 +79,53 @@ export class Game {
     this.camMode = 'follow'; this.turnBanner = null; this.lightningFx = [];
     this.lastKnockback = null; this.lastFireWind = null; this.lastSlow = null;
     this.lastChain = null; this.lastEarth = null;
+    // Android v2 Tahap B — Survival / Challenge state (per battle).
+    this.survivalWave = 0; this.challengeId = null; this.challengeShots = 0;
+    this.challengeMisses = 0; this.challengePlayerTurns = 0;
+    this.challengeFailed = false; this.challengeFailReason = null;
+    this.challengeResult = null; // 'complete' | 'failed' (set at game over)
+    this.weatherT = 0; // Android v2 Tahap B — ambient weather spawn timer
+  }
+  // Android v2 Tahap B — graphics quality: saved in arcane-duel-settings.
+  setQuality(q) {
+    if (!QUALITY[q]) return false;
+    this.quality = q;
+    try {
+      const prev = JSON.parse(localStorage.getItem('arcane-duel-settings') || '{}');
+      localStorage.setItem('arcane-duel-settings', JSON.stringify({ ...prev, quality: q }));
+    } catch (e) { /* ignore */ }
+    return true;
+  }
+  qualityCap() { return QUALITY[this.quality] || QUALITY.medium; }
+  // Android v2 Tahap B — Survival wave spec: which foe, difficulty, arena,
+  // HP bonus and damage multiplier for this wave.
+  survivalSpec(wave) {
+    const elite = wave % 5 === 0;
+    const ai = elite ? 'bront' : SURVIVAL_ROSTER[(wave - 1) % SURVIVAL_ROSTER.length];
+    const diff = elite ? 'elite' : SURVIVAL_DIFFS[Math.min(wave - 1, SURVIVAL_DIFFS.length - 1)];
+    const arena = SURVIVAL_ARENAS[(wave - 1) % SURVIVAL_ARENAS.length];
+    return { ai, diff, arena, elite, hpBonus: SURVIVAL_HP_PER_WAVE * (wave - 1), dmgMul: 1 + SURVIVAL_DMG_PER_WAVE * (wave - 1) };
+  }
+  _saveSurvivalBest() {
+    try { localStorage.setItem('arcane-duel-survival-best', String(this.survivalBest)); } catch (e) { /* ignore */ }
+  }
+  _saveChallengesDone() {
+    try { localStorage.setItem('arcane-duel-challenges', JSON.stringify([...this.challengesDone])); } catch (e) { /* ignore */ }
+  }
+  // Android v2 Tahap B — mark a challenge failed mid-battle (banner once).
+  failChallenge(reason) {
+    if (this.mode !== 'challenge' || this.challengeFailed) return;
+    this.challengeFailed = true; this.challengeFailReason = reason;
+    this.setBanner('❌ CHALLENGE FAILED', reason, 2.4, '#ff5a4e');
+  }
+  // Android v2 Tahap B — one-line challenge status for the HUD.
+  challengeStatus() {
+    if (this.mode !== 'challenge' || !this.challengeId) return null;
+    const c = CHALLENGES[this.challengeId];
+    if (this.challengeFailed) return `🏆 ${c.name} — ❌ FAILED (${this.challengeFailReason})`;
+    if (this.challengeId === 'oneshot') return `🏆 ${c.name} — shots fired: ${this.challengeShots}/1`;
+    if (this.challengeId === 'nomiss') return `🏆 ${c.name} — misses: ${this.challengeMisses} (must stay 0)`;
+    return `🏆 ${c.name} — your turns: ${this.challengePlayerTurns}/${SPEEDRUN_MAX_TURNS}`;
   }
   // Android v2 Tahap A — touch button size/opacity settings (own key).
   setTouchSettings(scale, opacity) {
@@ -127,6 +187,27 @@ export class Game {
       b.elite = true; b.maxHp = ELITE_HP; b.hp = ELITE_HP;
       this.campaignDiff = 'elite';
     }
+    // Android v2 Tahap B — Survival: the foe scales with the wave
+    // (+10 HP, +5% damage per wave); the best wave reached is persisted.
+    // Challenge: reset the per-battle trackers and announce the goal.
+    if (opts.mode === 'survival') {
+      this.survivalWave = opts.survivalWave || 1;
+      const spec = this.survivalSpec(this.survivalWave);
+      const foe = this.players[1];
+      foe.maxHp = (spec.elite ? ELITE_HP : (foe.hero.hp || MAX_HP)) + spec.hpBonus;
+      foe.hp = foe.maxHp;
+      foe.dmgMul = spec.dmgMul;
+      this.campaignDiff = spec.diff;
+      if (this.survivalWave > this.survivalBest) { this.survivalBest = this.survivalWave; this._saveSurvivalBest(); }
+      this.setBanner(`🌊 WAVE ${this.survivalWave}`, `${foe.hero.name} — ${spec.diff.toUpperCase()}${spec.elite ? ' • ELITE' : ''} • +${spec.hpBonus} HP, +${Math.round((spec.dmgMul - 1) * 100)}% damage`, 2.6, '#7ec8f7');
+    }
+    if (opts.mode === 'challenge') {
+      this.challengeId = opts.challengeId || 'oneshot';
+      this.campaignDiff = 'normal';
+      this.challengePlayerTurns = 1; // the opening turn is player turn #1
+      const c = CHALLENGES[this.challengeId];
+      this.setBanner(`🏆 ${c.name.toUpperCase()}`, c.desc, 3.0, '#ffd76a');
+    }
     this.wind = this._rollWind(seed);
     this.aim = { angle: 55, power: 65 };
     this.phase = 'aim'; this.phaseT = 0; this.turnTimer = TURN_TIME;
@@ -152,7 +233,7 @@ export class Game {
     }
     // The hero's signature weapon is always available (even for monsters).
     ammo[h.basic.id] = Infinity;
-    return { hero: h, x, y: 0, vy: 0, falling: false, fallStart: 0, hp: h.hp || MAX_HP, maxHp: h.hp || MAX_HP, elite: false,
+    return { hero: h, x, y: 0, vy: 0, falling: false, fallStart: 0, hp: h.hp || MAX_HP, maxHp: h.hp || MAX_HP, elite: false, dmgMul: 1,
       energy: 30, shield: 0, facing, ai, name, pose: 'idle', poseT: 0, ammo, cds: {}, alive: true,
       moveSteps: MOVE_STEPS };
   }
@@ -191,6 +272,9 @@ export class Game {
   remainingLabel() {
     if (this.mode === 'campaign') return `Musuh tersisa: ${Math.max(0, (this.campaignTotal || 6) - this.campaignIndex)}`;
     if (this.mode === 'training') return '🎯 Latihan — dummy';
+    // Android v2 Tahap B — Survival shows the wave + best; Challenge the goal.
+    if (this.mode === 'survival') return `🌊 Wave ${this.survivalWave} • Best: ${this.survivalBest}`;
+    if (this.mode === 'challenge') return `🏆 ${CHALLENGES[this.challengeId]?.name || 'Challenge'}`;
     return '⚔ Duel 1 lawan 1';
   }
 
@@ -336,6 +420,13 @@ export class Game {
       }
     }
     this.phase = 'flying'; this.phaseT = 0;
+    // Android v2 Tahap B — Challenge: every player shot counts. One-Shot
+    // is lost the moment a second shot leaves the muzzle. (Shield returns
+    // early above, so it never counts as a shot.)
+    if (this.mode === 'challenge' && this.turn === 0) {
+      this.challengeShots++;
+      if (this.challengeId === 'oneshot' && this.challengeShots > 1) this.failChallenge('More than one shot fired');
+    }
     return true;
   }
   _spawnProjectile(pr) {
@@ -435,6 +526,12 @@ export class Game {
     const def = slot === 1 ? p.hero.skill1 : slot === 2 ? p.hero.skill2 : p.hero.ult;
     p.energy -= def.cost; p.cds[def.id] = def.cd || 0;
     p.pose = 'fire'; p.poseT = 0.5;
+    // Android v2 Tahap B — Challenge: a skill / ultimate counts as a shot
+    // too (a wall is defensive, not a shot, so it doesn't count).
+    if (this.mode === 'challenge' && this.turn === 0 && def.id !== 'wall') {
+      this.challengeShots++;
+      if (this.challengeId === 'oneshot' && this.challengeShots > 1) this.failChallenge('More than one shot fired');
+    }
     const foe = this.opponent();
     const m = this._muzzle(p);
     if (slot === 3) return this._ultimate(p, def, foe, m);
@@ -465,6 +562,7 @@ export class Game {
   }
   _ultimate(p, def, foe, m) {
     this.audio.ultimate();
+    this.audio.shout(p.hero.id); // Android v2 Tahap B — battle cry on ultimate
     this.setBanner(def.name.toUpperCase() + '!', `${p.hero.name}'s ultimate attack`, 3.5, '#ffd76a');
     this.shake = 14;
     this.cine = { kind: def.id, t: 0, dur: 2.4, owner: this.turn, foeX: foe.x, foeY: foe.y };
@@ -499,6 +597,19 @@ export class Game {
     if (loser) { this._gameOver(1 - this.players.indexOf(loser)); return; }
     this.turn = 1 - this.turn;
     const p = this.active();
+    // Android v2 Tahap B — Speed Run counts the player's own turns: the
+    // challenge is lost the moment the 7th player turn begins.
+    if (this.mode === 'challenge' && this.turn === 0) {
+      this.challengePlayerTurns++;
+      if (this.challengeId === 'speedrun' && this.challengePlayerTurns > SPEEDRUN_MAX_TURNS) this.failChallenge(`More than ${SPEEDRUN_MAX_TURNS} turns taken`);
+    }
+    // Android v2 Tahap B — One-Shot: if the player's single shot didn't
+    // finish the enemy, the challenge is lost as soon as the turn moves on
+    // (a kill ends the battle via _gameOver before this point, so a live
+    // foe here means the one shot failed to finish the job).
+    if (this.mode === 'challenge' && this.challengeId === 'oneshot' && this.challengeShots >= 1) {
+      this.failChallenge('The first shot did not finish the enemy');
+    }
     p.energy = clamp(p.energy + 25, 0, 100);
     // Android v2 Tahap A — Ice SLOW: a beam-slowed hero gets half the walk
     // steps on their next turn, then the status clears.
@@ -568,6 +679,8 @@ export class Game {
     // v2: elite final boss hits 25% harder.
     const attacker = this.players[this.turn];
     if (attacker && attacker.elite && idx !== this.turn) dmg = Math.round(dmg * ELITE_DMG_MUL);
+    // Android v2 Tahap B — Survival scaling: the foe's damage grows +5%/wave.
+    if (attacker && attacker.dmgMul && attacker.dmgMul !== 1 && idx !== this.turn) dmg = Math.round(dmg * attacker.dmgMul);
     if (p.shield > 0) { const blocked = Math.min(p.shield, dmg); p.shield -= blocked; dmg -= blocked; this._floater(p.x, p.y - 120, `-${blocked} SHIELD`, '#7ec8f7'); }
     if (dmg <= 0) { this._floater(p.x, p.y - 120, 'BLOCKED!', '#7ec8f7'); return 0; }
     p.hp = Math.max(0, p.hp - dmg);
@@ -737,11 +850,38 @@ export class Game {
     void combo;
   }
   _burst(x, y, color, n, smoke = false) {
+    // Android v2 Tahap B — particle cap from the graphics quality setting
+    // (Low 40 / Medium 120 / High 250): stop spawning once the cap is hit.
+    const cap = this.qualityCap().particles;
     for (let i = 0; i < n; i++) {
+      if (this.particles.length >= cap) break;
       const a = Math.random() * Math.PI * 2, sp = 40 + Math.random() * (smoke ? 60 : 260);
       this.particles.push({ x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - (smoke ? 40 : 80),
         life: 0, max: 0.5 + Math.random() * (smoke ? 0.9 : 0.5), color, size: smoke ? 8 + Math.random() * 10 : 3 + Math.random() * 6,
         grav: smoke ? -30 : 320, kind: smoke ? 'smoke' : 'circle' });
+    }
+  }
+  // Android v2 Tahap B — ambient weather per arena (cheap drifting
+  // particles, count limited by quality: none on Low, light on Medium,
+  // full on High). Valley = snow, canyon = rising embers, temple = light
+  // motes / petals. Spawns in combat AND in the menu demo backdrop.
+  _spawnWeather(dt) {
+    const q = this.qualityCap();
+    if (q.weather === 0 || !this.arenaId || !this.terrain) return;
+    this.weatherT -= dt;
+    if (this.weatherT > 0) return;
+    this.weatherT = q.weather === 1 ? 0.28 : 0.1;
+    const cap = q.weather === 1 ? 30 : 80;
+    let n = 0;
+    for (const p of this.particles) if (p.weather) n++;
+    if (n >= cap) return;
+    const x = Math.random() * WORLD_W;
+    if (this.arenaId === 'valley') {
+      this.particles.push({ x, y: -10, vx: -12 - Math.random() * 18, vy: 26 + Math.random() * 26, life: 0, max: 14, color: '#ffffff', size: 2 + Math.random() * 2.5, grav: 0, kind: 'weather', weather: true, sway: Math.random() * 6.28 });
+    } else if (this.arenaId === 'canyon') {
+      this.particles.push({ x, y: H + 10, vx: (Math.random() - 0.5) * 24, vy: -34 - Math.random() * 40, life: 0, max: 9, color: Math.random() < 0.5 ? '#ff8c2f' : '#ffd76a', size: 2 + Math.random() * 2.5, grav: -14, kind: 'weather', weather: true, sway: Math.random() * 6.28 });
+    } else {
+      this.particles.push({ x, y: -10, vx: (Math.random() - 0.5) * 16, vy: 18 + Math.random() * 20, life: 0, max: 14, color: Math.random() < 0.5 ? '#ffd76a' : '#ffb3d9', size: 2 + Math.random() * 2.5, grav: 0, kind: 'weather', weather: true, sway: Math.random() * 6.28 });
     }
   }
   _floater(x, y, text, color, size = 20) { this.floaters.push({ x, y, text, color, size, t: 0, dur: 1.1 }); }
@@ -852,12 +992,32 @@ export class Game {
     this.players[1 - winnerIdx].pose = 'defeat';
     const won = this.mode === 'versus' ? true : winnerIdx === 0;
     if (won) this.audio.victory(); else this.audio.defeat();
+    // Android v2 Tahap B — the loser cries out; the Challenge verdict is
+    // decided here (win the duel AND meet the condition = complete).
+    this.audio.shout(this.players[1 - winnerIdx].hero.id);
+    if (this.mode === 'challenge') {
+      const met = !this.challengeFailed && (
+        (this.challengeId === 'oneshot' && this.challengeShots <= 1) ||
+        (this.challengeId === 'nomiss' && this.challengeMisses === 0) ||
+        (this.challengeId === 'speedrun' && this.challengePlayerTurns <= SPEEDRUN_MAX_TURNS));
+      this.challengeResult = (winnerIdx === 0 && met) ? 'complete' : 'failed';
+      if (this.challengeResult === 'complete') { this.challengesDone.add(this.challengeId); this._saveChallengesDone(); }
+    }
     // v3 — win credits: campaign +100, versus +50, training 0.
-    if (winnerIdx === 0) this.addCoins(WIN_CREDITS[this.mode] ?? 50);
+    // Android v2 Tahap B — survival pays +25 per wave won; a challenge pays
+    // +50 only when the challenge itself is completed (a plain duel win in
+    // challenge mode pays nothing extra).
+    if (winnerIdx === 0) {
+      if (this.mode === 'challenge') { if (this.challengeResult === 'complete') this.addCoins(WIN_CREDITS.challenge); }
+      else this.addCoins(WIN_CREDITS[this.mode] ?? 50);
+    }
     this.state = 'over';
     if (this.ui.onGameOver) this.ui.onGameOver({
       winnerIdx, won, mode: this.mode,
       campaignIndex: this.campaignIndex,
+      survivalWave: this.survivalWave, survivalBest: this.survivalBest,
+      challengeId: this.challengeId, challengeResult: this.challengeResult,
+      challengeFailReason: this.challengeFailReason,
       stats: { turns: this.stats.turns, damage: [...this.stats.damage], combos: this.stats.combos },
       winnerName: this.players[winnerIdx].name,
       winnerHero: this.players[winnerIdx].hero,
@@ -890,8 +1050,15 @@ export class Game {
     // v2.1: emote bubble lifetime.
     if (this.emoteBubble) { this.emoteBubble.t += dt; if (this.emoteBubble.t > this.emoteBubble.dur) this.emoteBubble = null; }
     this.shake = Math.max(0, this.shake - dt * 26);
-    for (const pt of this.particles) { pt.life += dt; pt.x += pt.vx * dt; pt.y += pt.vy * dt; pt.vy += pt.grav * dt; }
+    // Android v2 Tahap B — shake cap from the quality setting (Low = no big shake).
+    this.shake = Math.min(this.shake, this.qualityCap().shakeMax);
+    for (const pt of this.particles) {
+      pt.life += dt; pt.x += pt.vx * dt; pt.y += pt.vy * dt; pt.vy += pt.grav * dt;
+      // Android v2 Tahap B — weather particles sway gently side to side.
+      if (pt.kind === 'weather') pt.x += Math.sin(this.time * 1.5 + (pt.sway || 0)) * 14 * dt;
+    }
     this.particles = this.particles.filter(p => p.life < p.max);
+    this._spawnWeather(dt);
     for (const f of this.floaters) { f.t += dt; f.y -= 34 * dt; }
     this.floaters = this.floaters.filter(f => f.t < f.dur);
     for (const p of this.players) { if (p.poseT > 0) { p.poseT -= dt; if (p.poseT <= 0 && p.alive) p.pose = this.phase === 'aim' && this.players[this.turn] === p ? 'aim' : 'idle'; } }
@@ -942,7 +1109,8 @@ export class Game {
         this.aim.power = Math.min(FULL_POWER, this.aim.power + dt * 70);
       }
       // v3 — POW flames: at power 100 the hero burns with fire.
-      if (this.aim.power >= FULL_POWER && Math.random() < 0.6) {
+      // Android v2 Tahap B — capped by the quality setting like _burst.
+      if (this.aim.power >= FULL_POWER && this.particles.length < this.qualityCap().particles && Math.random() < 0.6) {
         this.particles.push({ x: p.x + (Math.random() - 0.5) * 90, y: p.y - 20 - Math.random() * 90,
           vx: (Math.random() - 0.5) * 20, vy: -60 - Math.random() * 60, life: 0, max: 0.5 + Math.random() * 0.3,
           color: Math.random() < 0.5 ? '#ff8c2f' : '#ffd76a', size: 3 + Math.random() * 5, grav: -120, kind: 'circle' });
@@ -1023,8 +1191,8 @@ export class Game {
         if (pr.kind !== 'beam') pr.vy += GRAVITY * (pr.weight ?? 1) * step;
         pr.x += pr.vx * step; pr.y += pr.vy * step;
         pr.trail.push([pr.x, pr.y]); if (pr.trail.length > 18) pr.trail.shift();
-        // Trail sparkles.
-        if (Math.random() < 0.5) this.particles.push({ x: pr.x, y: pr.y, vx: (Math.random() - 0.5) * 30, vy: (Math.random() - 0.5) * 30, life: 0, max: 0.35, color: pr.kind === 'arcane' ? '#c9a7ff' : '#ffb347', size: 2.5, grav: 0, kind: 'circle' });
+        // Trail sparkles. Android v2 Tahap B — capped by quality.
+        if (this.particles.length < this.qualityCap().particles && Math.random() < 0.5) this.particles.push({ x: pr.x, y: pr.y, vx: (Math.random() - 0.5) * 30, vy: (Math.random() - 0.5) * 30, life: 0, max: 0.35, color: pr.kind === 'arcane' ? '#c9a7ff' : '#ffb347', size: 2.5, grav: 0, kind: 'circle' });
         // v2 — reflect trap: an enemy projectile entering the field bounces
         // back at its shooter (trap is consumed, projectile changes owner).
         if (!pr.reflected) {
@@ -1156,6 +1324,12 @@ export class Game {
       }
       const hurtAnyone = this.players.some((p, i) => p.hp < hpBefore[i] || p.shield < shBefore[i]);
       if (!hurtAnyone) this._floater(pr.x, pr.y - 40, 'MISS', '#d8d8d8', 18);
+      // Android v2 Tahap B — No Miss: a player shot that hurts nobody
+      // ends the challenge (the MISS floater is the visible signal).
+      if (!hurtAnyone && pr.owner === 0 && this.mode === 'challenge' && this.challengeId === 'nomiss') {
+        this.challengeMisses++;
+        this.failChallenge('A shot missed completely');
+      }
     }
   }
 

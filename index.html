@@ -3,6 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#0b0e1e">
+<link rel="manifest" href="manifest.json">
 <link rel="icon" href="data:,">
 <title>ARCANE DUEL — Warriors of the Lost Realm</title>
 <style>
@@ -14,13 +16,17 @@
   .btn, .pick, .card { touch-action: none; }
   .ov { padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
   #status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-  .ov { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; color: #fff; background: rgba(6,8,24,0.55); z-index: 5; }
+  .ov { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: safe center; text-align: center; color: #fff; background: rgba(6,8,24,0.55); z-index: 5; overflow-y: auto; }
+  /* Android v2 Tahap B — overlays scroll on short screens (phone
+     landscape / the taller How to Play): safe center keeps the top
+     reachable instead of clipped, children never squash. */
+  .ov > * { flex-shrink: 0; }
   .hidden { display: none !important; }
   .panel { background: rgba(10,14,36,0.88); border: 2px solid #ffd76a; border-radius: 18px; padding: 28px 36px; max-width: 860px; box-shadow: 0 12px 50px rgba(0,0,0,0.6); }
-  h1 { font-size: 64px; margin: 0; letter-spacing: 4px; color: #ffd76a; text-shadow: 0 4px 0 #7a4a00, 0 8px 24px rgba(0,0,0,0.8); font-family: Georgia, serif; }
+  h1 { font-size: 56px; margin: 0; letter-spacing: 4px; color: #ffd76a; text-shadow: 0 4px 0 #7a4a00, 0 8px 24px rgba(0,0,0,0.8); font-family: Georgia, serif; }
   h2 { font-size: 30px; margin: 0 0 14px; color: #ffd76a; font-family: Georgia, serif; }
-  .sub { font-size: 17px; color: #d9b8ff; letter-spacing: 3px; margin: 6px 0 22px; }
-  .btn { display: block; width: 320px; margin: 8px auto; padding: 13px 20px; font-size: 18px; font-weight: bold; color: #1a1206; background: linear-gradient(#ffe08a, #ffb347); border: 2px solid #fff2c9; border-radius: 12px; cursor: pointer; font-family: inherit; }
+  .sub { font-size: 17px; color: #d9b8ff; letter-spacing: 3px; margin: 6px 0 14px; }
+  .btn { display: block; width: 320px; margin: 6px auto; padding: 10px 20px; font-size: 18px; font-weight: bold; color: #1a1206; background: linear-gradient(#ffe08a, #ffb347); border: 2px solid #fff2c9; border-radius: 12px; cursor: pointer; font-family: inherit; }
   .btn:hover { filter: brightness(1.12); transform: scale(1.02); }
   .btn.ghost { background: rgba(255,255,255,0.12); color: #fff; border-color: rgba(255,255,255,0.5); }
   .btn.small { width: auto; display: inline-block; padding: 9px 18px; font-size: 15px; margin: 6px; }
@@ -53,15 +59,28 @@
     <div class="sub">— WARRIORS OF THE LOST REALM —</div>
     <div class="panel" style="padding:18px 30px;">
       <button class="btn" data-act="campaign">⚔️ Campaign</button>
+      <button class="btn hidden" data-act="continue">▶ Continue Campaign</button>
+      <button class="btn" data-act="survival">🌊 Survival</button>
+      <button class="btn" data-act="challenge">🏆 Challenges</button>
       <button class="btn" data-act="versus">👥 Local Multiplayer</button>
       <button class="btn" data-act="training">🎯 Training</button>
       <button class="btn" data-act="shop">🛒 Weapon Shop</button>
       <button class="btn ghost" data-act="howto">How to Play</button>
       <button class="btn ghost" data-act="settings">Settings</button>
       <button class="btn ghost" data-act="credits">Credits</button>
+      <button class="btn ghost" data-act="fullscreen">⛶ Fullscreen</button>
     </div>
     <div style="margin-top:14px;font-size:13px;color:#bbb;">Turn-based artillery fantasy • 2 players • Offline • An original game</div>
     <div id="menu-coins" style="margin-top:8px;font-size:15px;color:#ffd76a;">🪙 0 Duel Coins</div>
+    <div id="menu-progress" style="margin-top:4px;font-size:14px;color:#7ec8f7;"></div>
+  </div>
+
+  <div class="ov hidden" id="ov-challenge">
+    <div class="panel">
+      <h2>🏆 Challenges</h2>
+      <div id="challenge-list" style="max-width:640px;"></div>
+      <button class="btn" id="challenge-back">Back</button>
+    </div>
   </div>
 
   <div class="ov hidden" id="ov-select">
@@ -79,6 +98,7 @@
       <h2>Paused</h2>
       <button class="btn" id="pause-resume">Resume</button>
       <button class="btn ghost" id="pause-restart">Restart Battle</button>
+      <button class="btn ghost" id="pause-fullscreen">⛶ Fullscreen</button>
       <button class="btn ghost" id="pause-quit">Quit to Menu</button>
     </div>
   </div>
@@ -111,6 +131,19 @@
       <label><input type="checkbox" id="set-mute"> Mute all (M)</label>
       <label>🕹️ Touch button size <input type="range" id="set-touch-scale" min="0.8" max="1.3" step="0.05"> <span id="set-touch-scale-val">1.00×</span></label>
       <label>👻 Touch button opacity <input type="range" id="set-touch-opacity" min="0.5" max="1" step="0.05"> <span id="set-touch-opacity-val">85%</span></label>
+      <label>🎨 Graphics quality</label>
+      <div class="pickrow" id="set-quality">
+        <button class="pick" data-q="low">Low</button>
+        <button class="pick" data-q="medium">Medium</button>
+        <button class="pick" data-q="high">High</button>
+      </div>
+      <div style="font-size:13px;color:#bbb;">Low: few particles, no weather, small shake. High: full particles + weather + shake.</div>
+      <div style="margin-top:14px;">
+        <button class="btn small" id="set-export">⬇ Export Save</button>
+        <button class="btn small" id="set-import">⬆ Import Save</button>
+        <input type="file" id="set-import-file" accept=".json,application/json" style="display:none">
+        <div id="set-save-status" style="font-size:13px;color:#ffd76a;margin-top:6px;"></div>
+      </div>
       <button class="btn" id="set-back">Back</button>
     </div>
   </div>
@@ -140,7 +173,11 @@
         <b>Wind:</b> shown at the top — it pushes every projectile. Wind changes every turn.<br>
         <b>Terrain:</b> explosions carve craters. Heroes fall if their ground is destroyed — blast the ground clean through and your rival <b>falls into the abyss and dies</b>!<br>
         <b>Combo:</b> fire hitting a purple arcane zone triggers an ELEMENTAL COMBO blast!<br>
-        <b>Campaign:</b> beat 6 battles — beetles, wasps and shadow scorpions from the Mist Forest — then face the FINAL BOSS, Elite Bront with 150 HP!<br>
+        <b>Campaign:</b> beat 6 battles — beetles, wasps and shadow scorpions from the Mist Forest — then face the FINAL BOSS, Elite Bront with 150 HP! Your progress auto-saves — <b>Continue Campaign</b> on the menu resumes where you left off.<br>
+        <b>Survival:</b> endless waves, one foe per wave — each wave +10 HP and +5% damage for the enemy, difficulty climbing Apprentice → Elite. Every wave cleared pays +25 🪙. Your best wave is saved.<br>
+        <b>Challenges:</b> three fixed duels with a special win condition — <b>One-Shot</b> (win with a single shot), <b>No Miss</b> (win without a single MISS), <b>Speed Run</b> (win within 6 of your own turns). Complete one for +50 🪙.<br>
+        <b>Weather:</b> snow drifts in Crystal Valley, embers rise in Ember Canyon, light motes float in the Sky Temple. Graphics quality (Settings) controls particles and weather — Low turns weather off.<br>
+        <b>Offline:</b> the game installs as an app (PWA) and works fully offline after the first load. Export / Import your save from Settings.
         <b>Touch (phone):</b> left virtual joystick to walk, drag on the field to aim, vertical POWER slider on the right edge, big 🔥 FIRE button. Tap <b>II</b> to pause, <b>🔍 ZOOM OUT</b> to see the whole arena (or press <span class="kbd">C</span>). Two fingers work at once — steer with one thumb, aim and fire with the other.<br>
         <b>Elements:</b> strong wind (6+) feeds fire blasts (+25% radius, "FIRE+WIND!"). The Elemental Beam chills — a hit SLOWs the foe's next turn (half moves). Homing Orbs chain lightning to another hero within 120px. Earth blasts dig deeper craters and raise rims at the edges.<br>
         <b>Pause:</b> <span class="kbd">Esc</span> or tap <b>II</b> &nbsp; <b>Mute:</b> <span class="kbd">M</span> &nbsp; <b>Camera:</b> <span class="kbd">C</span>

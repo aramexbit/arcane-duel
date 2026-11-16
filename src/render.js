@@ -47,10 +47,16 @@ export class Renderer {
     ctx.save();
     ctx.clearRect(0, 0, W, H);
     // Screen-space sky fill FIRST so a cinematic zoom never leaves bare edges.
+    // Android v2 Tahap B — the sky gradient is cached per arena instead of
+    // rebuilt every frame (same coords every frame, so caching is safe).
     if (game.arenaId) {
       const arena0 = ARENAS[game.arenaId];
-      const g0 = ctx.createLinearGradient(0, 0, 0, H);
-      g0.addColorStop(0, arena0.sky[0]); g0.addColorStop(0.55, arena0.sky[1]); g0.addColorStop(1, arena0.sky[2]);
+      let g0 = this.bgCache['sky-' + game.arenaId];
+      if (!g0) {
+        g0 = ctx.createLinearGradient(0, 0, 0, H);
+        g0.addColorStop(0, arena0.sky[0]); g0.addColorStop(0.55, arena0.sky[1]); g0.addColorStop(1, arena0.sky[2]);
+        this.bgCache['sky-' + game.arenaId] = g0;
+      }
       ctx.fillStyle = g0; ctx.fillRect(0, 0, W, H);
     }
     // Cinematic zoom + shake (zoom centres on the midpoint of the duel so
@@ -86,6 +92,8 @@ export class Renderer {
     if (game.state === 'combat' || game.state === 'pause' || game.state === 'over') this._hud(game, now);
     if (game.banner) this._banner(game);
     if (game.turnBanner) this._turnBanner(game);
+    // Android v2 Tahap B — FPS readout (only with ?fps=1, never on by default).
+    if (game.showFps && game.fps) text(ctx, `FPS ${Math.round(game.fps)}`, W - 16, H - 6, 13, '#7ec8f7', 'right');
   }
   // Android v2 Tahap A — chain-lightning bolts (jagged polylines).
   _lightning(game) {
@@ -104,29 +112,46 @@ export class Renderer {
   _background(game, now) {
     const ctx = this.ctx;
     const arena = ARENAS[game.arenaId || 'valley'];
-    const g = ctx.createLinearGradient(0, 0, 0, H);
-    g.addColorStop(0, arena.sky[0]); g.addColorStop(0.55, arena.sky[1]); g.addColorStop(1, arena.sky[2]);
+    // Android v2 Tahap B — the background sky gradient is cached per arena
+    // (same user-space coords every frame). The camera used here MUST match
+    // the one draw() computed (0 during cinematics / zoom-out).
+    let g = this.bgCache['bg-' + (game.arenaId || 'valley')];
+    if (!g) {
+      g = ctx.createLinearGradient(0, 0, 0, H);
+      g.addColorStop(0, arena.sky[0]); g.addColorStop(0.55, arena.sky[1]); g.addColorStop(1, arena.sky[2]);
+      this.bgCache['bg-' + (game.arenaId || 'valley')] = g;
+    }
     ctx.fillStyle = g; ctx.fillRect(-40, -40, WORLD_W + 80, H + 80);
+    // Android v2 Tahap B — parallax: far layers are drawn at world x +
+    // cam * (1 - factor), so on screen they move SLOWER than the world
+    // (clouds 0.3x, ruins 0.5x, moon 0.15x). Exposed as renderer.parallax
+    // so the probe can verify the offsets actually change with camX.
+    const cam = (game.cine || game.camMode === 'zoomout') ? 0 : (game.camX || 0);
+    this.parallax = { cloud: cam * 0.7, ruins: cam * 0.5, moon: cam * 0.85 };
     // Moon / sun.
     const moon = imageFor('decor_moon');
-    if (moon && game.arenaId !== 'canyon') ctx.drawImage(moon, 1050, 46, 128, 128);
+    if (moon && game.arenaId !== 'canyon') ctx.drawImage(moon, 1050 + this.parallax.moon, 46, 128, 128);
     if (game.arenaId === 'canyon') {
-      const lg = ctx.createRadialGradient(640, 700, 60, 640, 700, 700);
-      lg.addColorStop(0, 'rgba(255,110,30,0.55)'); lg.addColorStop(1, 'rgba(255,110,30,0)');
+      let lg = this.bgCache['lava'];
+      if (!lg) {
+        lg = ctx.createRadialGradient(640, 700, 60, 640, 700, 700);
+        lg.addColorStop(0, 'rgba(255,110,30,0.55)'); lg.addColorStop(1, 'rgba(255,110,30,0)');
+        this.bgCache['lava'] = lg;
+      }
       ctx.fillStyle = lg; ctx.fillRect(0, 0, W, H);
     }
     // Drifting clouds.
     const cloud = imageFor('decor_cloud');
     if (cloud) {
       for (let i = 0; i < 6; i++) {
-        const cx = ((i * 360 + now * (6 + i * 2)) % (WORLD_W + 320)) - 160;
+        const cx = ((i * 360 + now * (6 + i * 2) + this.parallax.cloud) % (WORLD_W + 320)) - 160;
         ctx.globalAlpha = 0.5; ctx.drawImage(cloud, cx, 60 + (i % 4) * 42, 160, 64); ctx.globalAlpha = 1;
       }
     }
     // Far ruin silhouettes (parallax layer).
     ctx.fillStyle = arena.far; ctx.globalAlpha = 0.55;
     for (let i = 0; i < 11; i++) {
-      const bx = i * 190 + 30, bw = 60 + (i % 3) * 26, bh = 150 + ((i * 53) % 120);
+      const bx = i * 190 + 30 + this.parallax.ruins, bw = 60 + (i % 3) * 26, bh = 150 + ((i * 53) % 120);
       ctx.fillRect(bx, 560 - bh, bw, bh);
       ctx.beginPath(); ctx.moveTo(bx - 8, 560 - bh); ctx.lineTo(bx + bw / 2, 560 - bh - 34); ctx.lineTo(bx + bw + 8, 560 - bh); ctx.closePath(); ctx.fill();
     }
@@ -289,11 +314,22 @@ export class Renderer {
       const isEnemy = game.players[pr.owner] && game.players[pr.owner].ai;
       const glowColor = pr.fullPower ? '#ffd76a' : pr.elem === 'arcane' ? '#c9a7ff' : pr.elem === 'fire' ? '#ff8c2f' : '#ffb347';
       // v2 — glowing halo so every shot (especially the enemy's) is visible.
-      const halo = ctx.createRadialGradient(pr.x, pr.y, 4, pr.x, pr.y, pr.fullPower ? 64 : 44);
-      halo.addColorStop(0, glowColor); halo.addColorStop(1, 'rgba(255,255,255,0)');
+      // Android v2 Tahap B — the halo gradient is cached per colour/size
+      // (centred on 0,0, drawn after a translate) instead of rebuilt per
+      // projectile per frame.
+      const haloR = pr.fullPower ? 64 : 44;
+      const haloKey = 'halo-' + glowColor + '-' + haloR;
+      let halo = this.bgCache[haloKey];
+      if (!halo) {
+        halo = ctx.createRadialGradient(0, 0, 4, 0, 0, haloR);
+        halo.addColorStop(0, glowColor); halo.addColorStop(1, 'rgba(255,255,255,0)');
+        this.bgCache[haloKey] = halo;
+      }
+      ctx.save();
+      ctx.translate(pr.x, pr.y);
       ctx.globalAlpha = 0.55; ctx.fillStyle = halo;
-      ctx.beginPath(); ctx.arc(pr.x, pr.y, pr.fullPower ? 64 : 44, 0, Math.PI * 2); ctx.fill();
-      ctx.globalAlpha = 1;
+      ctx.beginPath(); ctx.arc(0, 0, haloR, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
       // Trail.
       ctx.strokeStyle = pr.elem === 'arcane' ? 'rgba(192,140,255,0.8)' : pr.elem === 'fire' ? 'rgba(255,140,50,0.8)' : pr.fullPower ? 'rgba(255,215,106,0.9)' : 'rgba(255,255,255,0.55)';
       ctx.lineWidth = pr.fullPower ? 7 : 5; ctx.beginPath();
@@ -324,7 +360,8 @@ export class Renderer {
     const ctx = this.ctx;
     for (const pt of game.particles) {
       const a = 1 - pt.life / pt.max;
-      ctx.globalAlpha = Math.max(0, a);
+      // Android v2 Tahap B — weather motes are soft (half alpha).
+      ctx.globalAlpha = pt.kind === 'weather' ? Math.max(0, a) * 0.55 : Math.max(0, a);
       if (pt.kind === 'smoke') { ctx.fillStyle = '#555'; ctx.beginPath(); ctx.arc(pt.x, pt.y, pt.size * (1 + pt.life), 0, Math.PI * 2); ctx.fill(); }
       else { ctx.fillStyle = pt.color; ctx.beginPath(); ctx.arc(pt.x, pt.y, pt.size * a + 1, 0, Math.PI * 2); ctx.fill(); }
     }
@@ -413,6 +450,11 @@ export class Renderer {
         const pulse = 15 + Math.sin(now * 6) * 2;
         text(ctx, '★ SPECIAL READY — tap POW FIRE! ★', W / 2, 174, pulse, '#ffd76a', 'center');
       }
+    }
+    // Android v2 Tahap B — challenge goal + live status under the aim readout.
+    const chStatus = game.challengeStatus();
+    if (chStatus && game.state === 'combat') {
+      text(ctx, chStatus, W / 2, 210, 13, game.challengeFailed ? '#ff5a4e' : '#ffd76a', 'center');
     }
     // Weapon inventory (bottom left) — Android v2 Tahap A: slots 58 -> 64px
     // so they stay finger-friendly when the 1280px canvas is letterboxed

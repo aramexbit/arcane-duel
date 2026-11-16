@@ -23,7 +23,12 @@ export class AudioSys {
     this.startAmbient();
   }
   save() {
-    try { localStorage.setItem('arcane-duel-settings', JSON.stringify({ musicVol: this.musicVol, sfxVol: this.sfxVol, muted: this.muted })); } catch (e) { /* ignore */ }
+    // Android v2 Tahap B — merge, don't overwrite: the same key also
+    // carries the graphics quality field (set by the game, not audio).
+    try {
+      const prev = JSON.parse(localStorage.getItem('arcane-duel-settings') || '{}');
+      localStorage.setItem('arcane-duel-settings', JSON.stringify({ ...prev, musicVol: this.musicVol, sfxVol: this.sfxVol, muted: this.muted }));
+    } catch (e) { /* ignore */ }
   }
   setMuted(m) { this.muted = m; if (this.ctx) { this.musicGain.gain.value = m ? 0 : this.musicVol * 0.35; this.sfxGain.gain.value = m ? 0 : this.sfxVol; } this.save(); }
   setMusic(v) { this.musicVol = v; if (this.ctx) this.musicGain.gain.value = this.muted ? 0 : v * 0.35; this.save(); }
@@ -90,6 +95,34 @@ export class AudioSys {
   victory() { [523, 659, 784, 1046, 1318].forEach((f, i) => this._tone(f, 0.35, 'triangle', 0.35, null, i * 0.12)); }
   defeat() { [392, 330, 262, 196].forEach((f, i) => this._tone(f, 0.4, 'triangle', 0.3, null, i * 0.15)); }
   turn() { this._tone(880, 0.08, 'sine', 0.2); }
+  // Android v2 Tahap B — character shouts: a short synth cry, different
+  // per hero, played on ultimate + on defeat. No audio files.
+  shout(heroId = 'kairo') {
+    if (!this.ctx || this.muted) return;
+    const voices = {
+      kairo: { type: 'sawtooth', f: 210, slide: 90, dur: 0.35, vol: 0.35 },   // fiery growl
+      nyx: { type: 'sine', f: 880, slide: 1320, dur: 0.3, vol: 0.3 },        // arcane cry
+      bront: { type: 'sawtooth', f: 95, slide: 48, dur: 0.45, vol: 0.4 },    // deep roar
+      kumbang: { type: 'square', f: 140, slide: 70, dur: 0.35, vol: 0.3 },
+      momok: { type: 'sawtooth', f: 620, slide: 200, dur: 0.35, vol: 0.3 },
+      tawon: { type: 'square', f: 1200, slide: 900, dur: 0.22, vol: 0.25 },
+    };
+    const v = voices[heroId] || voices.kairo;
+    this._tone(v.f, v.dur, v.type, v.vol, v.slide);
+    this._tone(v.f * 1.5, v.dur * 0.8, 'triangle', v.vol * 0.6, v.slide * 1.5, 0.05);
+  }
+  // Android v2 Tahap B — a melody note through the MUSIC bus (follows the
+  // music volume + mute, unlike _tone which is SFX).
+  _melodyTone(freq, dur, vol = 0.14) {
+    if (!this.ctx) return;
+    const t0 = this.ctx.currentTime;
+    const o = this.ctx.createOscillator(), g = this.ctx.createGain();
+    o.type = 'triangle'; o.frequency.setValueAtTime(freq, t0);
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.exponentialRampToValueAtTime(vol, t0 + 0.08);
+    g.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+    o.connect(g); g.connect(this.musicGain); o.start(t0); o.stop(t0 + dur + 0.02);
+  }
   startAmbient() {
     if (!this.ctx || this._ambient) return;
     // Gentle two-oscillator drone + slow shimmer, menu ambience.
@@ -101,5 +134,22 @@ export class AudioSys {
     lfo.connect(lg); lg.connect(g.gain);
     o1.connect(g); o2.connect(g); o1.start(); o2.start(); lfo.start();
     this._ambient = { o1, o2, lfo, g };
+    // Android v2 Tahap B — slow pentatonic melody loop over the drone
+    // (A minor pentatonic, one soft note per ~0.55s step, rests included).
+    // WebAudio only, no files; volume follows the music setting via
+    // musicGain; starts only after ensure() (user interaction).
+    const SCALE = [440, 523.25, 587.33, 659.25, 783.99, 880, 1046.5];
+    const PATTERN = [0, -1, 2, -1, 4, 3, -1, 2, 5, -1, 4, 2, 1, -1, 0, -1];
+    this._melodyStep = 0;
+    this.melodyPlaying = true;
+    this._melodyTimer = setInterval(() => {
+      if (!this.ctx || this.muted) { this._melodyStep++; return; }
+      const idx = PATTERN[this._melodyStep % PATTERN.length];
+      this._melodyStep++;
+      if (idx < 0) return;
+      this._melodyTone(SCALE[idx % SCALE.length], 0.9);
+      // Occasional soft harmony a fifth below on the downbeat.
+      if (this._melodyStep % 8 === 1) this._melodyTone(SCALE[idx % SCALE.length] / 2, 1.4, 0.07);
+    }, 550);
   }
 }
