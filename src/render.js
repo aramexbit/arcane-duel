@@ -1,5 +1,5 @@
 // ARCANE DUEL — all canvas rendering: arena, terrain, heroes, HUD, effects.
-import { W, WORLD_W, H, WEAPONS, WEAPON_ORDER, ARENAS, FULL_POWER } from './config.js';
+import { W, WORLD_W, H, WEAPONS, WEAPON_ORDER, ARENAS, FULL_POWER, HERO_SCALE, SKIN_THEMES } from './config.js';
 
 const SPRITES = {};
 const SPRITE_LIST = [];
@@ -259,50 +259,64 @@ export class Renderer {
       const walking = p.walkT > 0 && !p.falling;
       const bob = p.pose === 'idle' ? Math.sin(now * 2 + p.x) * 2 : walking ? Math.sin(now * 14) * 4 : 0;
       const tilt = p.falling ? 0.28 * p.facing : walking ? 0.07 * p.facing : 0;
+      // v3.1 Skin Feature — heroes are HERO_SCALE of their old size so the
+      // map reads wider (Bomb Heroes 2 style). All accessories scale with
+      // the sprite; the hit circle (CHAR_HIT_R=36) does NOT change.
+      const S = HERO_SCALE;
+      const spriteTop = p.y - 140 * S; // top of the shrunken sprite
       ctx.save();
-      ctx.translate(p.x, p.y - 140 + bob);
+      ctx.translate(p.x, p.y - 140 * S + bob);
       if (tilt) ctx.rotate(tilt);
       if (p.facing === -1) ctx.scale(-1, 1);
-      if (img) ctx.drawImage(img, -60, 0, 120, 150);
-      else { ctx.fillStyle = p.hero.color; ctx.fillRect(-30, -90, 60, 90); }
+      if (img) ctx.drawImage(img, -60 * S, 0, 120 * S, 150 * S);
+      else { ctx.fillStyle = p.hero.color; ctx.fillRect(-30 * S, -90 * S, 60 * S, 90 * S); }
       ctx.restore();
+      // v3.1 Skin Feature — SMALL power bar above the active hero (the big
+      // vertical slider is gone; power still needs to be visible while
+      // aiming, and it lives next to the hero who is shooting).
+      if (game.state === 'combat' && game.phase === 'aim' && game.players[game.turn] === p) {
+        const pw = game.aim.power / 100;
+        game.lastPowerBar = { x: p.x - 28, y: spriteTop - 30, w: 56, h: 6, power: Math.round(game.aim.power) };
+        bar(ctx, p.x - 28, spriteTop - 30, 56, 6, pw, game.aim.power >= FULL_POWER ? '#ffd76a' : '#ff7a2f');
+        text(ctx, `${Math.round(game.aim.power)}`, p.x + 34, spriteTop - 27, 11, '#fff', 'left');
+      }
       // Android v2 Tahap A — SLOWED (beam ice): blue ring + label.
       if (p.slowTurns > 0) {
         ctx.strokeStyle = 'rgba(126,200,247,0.9)'; ctx.lineWidth = 3;
-        ctx.beginPath(); ctx.ellipse(p.x, p.y - 70, 62, 76, 0, 0, Math.PI * 2); ctx.stroke();
-        text(ctx, 'SLOWED', p.x, p.y - 186, 11, '#7ec8f7', 'center');
+        ctx.beginPath(); ctx.ellipse(p.x, p.y - 50, 45, 55, 0, 0, Math.PI * 2); ctx.stroke();
+        text(ctx, 'SLOWED', p.x, p.y - 134, 11, '#7ec8f7', 'center');
       }
       // Shield bubble.
       if (p.shield > 0) {
         const sh = imageFor('proj_shield');
         ctx.globalAlpha = 0.85;
-        if (sh) ctx.drawImage(sh, p.x - 58, p.y - 150, 116, 116);
+        if (sh) ctx.drawImage(sh, p.x - 42, p.y - 108, 84, 84);
         ctx.globalAlpha = 1;
       }
       // v2 — elite boss: gold crown + dark aura so it reads as the final boss.
       if (p.elite) {
         ctx.fillStyle = 'rgba(120,20,20,0.25)';
-        ctx.beginPath(); ctx.ellipse(p.x, p.y - 70, 66, 78, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.ellipse(p.x, p.y - 50, 48, 56, 0, 0, Math.PI * 2); ctx.fill();
         ctx.fillStyle = '#ffd76a'; ctx.strokeStyle = '#7a4a00'; ctx.lineWidth = 2;
         ctx.beginPath();
-        ctx.moveTo(p.x - 26, p.y - 178); ctx.lineTo(p.x - 26, p.y - 198); ctx.lineTo(p.x - 13, p.y - 186);
-        ctx.lineTo(p.x, p.y - 202); ctx.lineTo(p.x + 13, p.y - 186); ctx.lineTo(p.x + 26, p.y - 198);
-        ctx.lineTo(p.x + 26, p.y - 178); ctx.closePath(); ctx.fill(); ctx.stroke();
+        ctx.moveTo(p.x - 19, p.y - 128); ctx.lineTo(p.x - 19, p.y - 143); ctx.lineTo(p.x - 9, p.y - 134);
+        ctx.lineTo(p.x, p.y - 145); ctx.lineTo(p.x + 9, p.y - 134); ctx.lineTo(p.x + 19, p.y - 143);
+        ctx.lineTo(p.x + 19, p.y - 128); ctx.closePath(); ctx.fill(); ctx.stroke();
         ctx.fillStyle = '#ff5a4e';
-        ctx.beginPath(); ctx.arc(p.x, p.y - 188, 4, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(p.x, p.y - 135, 3, 0, Math.PI * 2); ctx.fill();
       }
       // Name tag.
-      text(ctx, `${p.hero.name}`, p.x, p.y - 158, 13, '#ffffff', 'center');
+      text(ctx, `${p.hero.name}`, p.x, spriteTop - 13, 13, '#ffffff', 'center');
       // v2.1 — emote bubble above the hero who emoted (visual only).
       if (game.emoteBubble && game.emoteBubble.player === game.players.indexOf(p)) {
-        const ey = p.y - 208;
-        ctx.beginPath(); ctx.arc(p.x, ey, 24, 0, Math.PI * 2);
+        const ey = spriteTop - 40;
+        ctx.beginPath(); ctx.arc(p.x, ey, 20, 0, Math.PI * 2);
         ctx.fillStyle = 'rgba(255,255,255,0.92)'; ctx.fill();
         ctx.strokeStyle = 'rgba(10,10,30,0.6)'; ctx.lineWidth = 2; ctx.stroke();
-        text(ctx, game.emoteBubble.emoji, p.x, ey + 1, 24, '#222', 'center');
+        text(ctx, game.emoteBubble.emoji, p.x, ey + 1, 20, '#222', 'center');
       }
       // Falling indicator.
-      if (p.falling) text(ctx, '!', p.x, p.y - 180, 22, '#ffd76a', 'center');
+      if (p.falling) text(ctx, '!', p.x, spriteTop - 25, 22, '#ffd76a', 'center');
     }
   }
   _idleFrame(now) { return Math.floor(now * 1.6) % 2 === 1; }
@@ -312,7 +326,10 @@ export class Renderer {
       // A poisoned projectile must never throw inside draw (Nov 2026).
       if (!Number.isFinite(pr.x) || !Number.isFinite(pr.y)) continue;
       const isEnemy = game.players[pr.owner] && game.players[pr.owner].ai;
-      const glowColor = pr.fullPower ? '#ffd76a' : pr.elem === 'arcane' ? '#c9a7ff' : pr.elem === 'fire' ? '#ff8c2f' : '#ffb347';
+      // v3.1 Skin Feature — a skinned projectile glows + trails in its skin's
+      // palette (cosmetic only; the flight physics never change).
+      const skinC = (pr.skinTheme && pr.skinTheme !== 'default') ? SKIN_THEMES[pr.skinTheme] : null;
+      const glowColor = skinC ? skinC.glow : pr.fullPower ? '#ffd76a' : pr.elem === 'arcane' ? '#c9a7ff' : pr.elem === 'fire' ? '#ff8c2f' : '#ffb347';
       // v2 — glowing halo so every shot (especially the enemy's) is visible.
       // Android v2 Tahap B — the halo gradient is cached per colour/size
       // (centred on 0,0, drawn after a translate) instead of rebuilt per
@@ -331,7 +348,7 @@ export class Renderer {
       ctx.beginPath(); ctx.arc(0, 0, haloR, 0, Math.PI * 2); ctx.fill();
       ctx.restore();
       // Trail.
-      ctx.strokeStyle = pr.elem === 'arcane' ? 'rgba(192,140,255,0.8)' : pr.elem === 'fire' ? 'rgba(255,140,50,0.8)' : pr.fullPower ? 'rgba(255,215,106,0.9)' : 'rgba(255,255,255,0.55)';
+      ctx.strokeStyle = skinC ? skinC.trail : pr.elem === 'arcane' ? 'rgba(192,140,255,0.8)' : pr.elem === 'fire' ? 'rgba(255,140,50,0.8)' : pr.fullPower ? 'rgba(255,215,106,0.9)' : 'rgba(255,255,255,0.55)';
       ctx.lineWidth = pr.fullPower ? 7 : 5; ctx.beginPath();
       pr.trail.forEach(([x, y], i) => { if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y); });
       ctx.stroke();
@@ -346,6 +363,11 @@ export class Renderer {
         ctx.drawImage(img, -size / 2, -size / 2, size, size);
         ctx.restore();
       } else { ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(pr.x, pr.y, 8, 0, Math.PI * 2); ctx.fill(); }
+      // v3.1 Skin Feature — a thin ring in the skin's colour marks a skinned shot.
+      if (skinC) {
+        ctx.beginPath(); ctx.arc(pr.x, pr.y, size / 2 + 4, 0, Math.PI * 2);
+        ctx.strokeStyle = skinC.proj; ctx.lineWidth = 3; ctx.stroke();
+      }
       // v2 — enemy shots get a pulsing red ring so the eye finds them instantly.
       if (isEnemy) {
         ctx.beginPath(); ctx.arc(pr.x, pr.y, 30 + Math.sin(game.time * 10) * 4, 0, Math.PI * 2);
@@ -399,7 +421,7 @@ export class Renderer {
   }
   _hud(game, now) {
     const ctx = this.ctx;
-    this.uiRegions = { weapons: [], skills: [], utility: [], powFire: null, fireBtn: null, dpad: [], joystick: null, powerSlider: null, pauseBtn: null, camBtn: null, aimPad: null };
+    this.uiRegions = { weapons: [], skills: [], utility: [], powFire: null, powUlt: null, fireBtn: null, dpad: [], joystick: null, pauseBtn: null, camBtn: null, aimPad: null };
     // Touch press feedback: a button tapped <180ms ago draws highlighted.
     const flash = game.pressFlash && (Date.now() - game.pressFlash.t) < 180 ? game.pressFlash.key : null;
     // Top player cards.
@@ -477,6 +499,14 @@ export class Renderer {
       const spr = { cannon: 'proj_cannon', triple: 'proj_cluster', meteor: 'proj_meteor', homing: 'proj_homing', pierce: 'proj_pierce', cluster: 'proj_cluster', beam: 'proj_beam', shield: 'proj_shield' }[id];
       const img = imageFor(spr);
       if (img) ctx.drawImage(img, wx + 12, H - 120, 40, 40);
+      // v3.1 Skin Feature — a dot in the skin's colour marks a weapon with a
+      // non-default skin equipped (so the loadout is visible at a glance).
+      const eqSkin = game.equippedSkin(id);
+      if (eqSkin && eqSkin.theme !== 'default') {
+        ctx.fillStyle = (SKIN_THEMES[eqSkin.theme] || SKIN_THEMES.default).proj;
+        ctx.beginPath(); ctx.arc(wx + 56, H - 122, 6, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.stroke();
+      }
       if (locked) text(ctx, '🔒', wx + 32, H - 104, 20, '#ffd76a', 'center');
       else text(ctx, ammo === Infinity ? '∞' : String(ammo), wx + 54, H - 76, 12, '#fff', 'center');
       ctx.globalAlpha = 1;
@@ -552,10 +582,26 @@ export class Renderer {
         text(ctx, '🔥 POW FIRE! 🔥', W / 2, by + bh / 2, 20, '#fff', 'center');
         this.uiRegions.powFire = { x: bx, y: by, w: bw, h: bh };
       }
+      // v3.1 Skin Feature — POINT at 100: a big POW button fires the ultimate
+      // (the jurus). Same action as skill slot 3 / key 3. Top-right, clear of
+      // the FIRE button, the skills row and the POW FIRE button.
+      if (game.phase === 'aim' && !p0.ai && p0.energy >= 100) {
+        const pulse = 1 + Math.sin(now * 6) * 0.06;
+        const bw = 200 * pulse, bh = 40;
+        const bx = W - 216, by = 122;
+        rr(ctx, bx, by, bw, bh, 12);
+        ctx.fillStyle = 'rgba(160,107,255,0.95)'; ctx.fill();
+        ctx.strokeStyle = '#ffd76a'; ctx.lineWidth = 3; ctx.stroke();
+        text(ctx, '💥 POW! ULTIMATE', bx + bw / 2, by + bh / 2, 15, '#fff', 'center');
+        this.uiRegions.powUlt = { x: bx, y: by, w: bw, h: bh };
+      }
       // Android v2 Tahap A — touch controls replace the old ◀ ▶ D-pad:
-      // virtual joystick (left), vertical power slider (right edge) and a
+      // virtual joystick (left), AIM pad (left, above the joystick) and a
       // big FIRE button (bottom right). Sizes follow the touch settings
       // (scale 0.8–1.3, opacity 0.5–1.0, key arcane-duel-touch).
+      // v3.1 Skin Feature — the big vertical POWER slider is GONE (it covered
+      // the middle of the arena). Power is set via the AIM pad / field drag /
+      // Space charge, and shown as a small bar above the active hero.
       if (game.touchMode && game.phase === 'aim') {
         const ts = game.touchSettings.scale, op = game.touchSettings.opacity;
         // Virtual joystick: grab zone is bigger than the drawn base.
@@ -591,21 +637,6 @@ export class Renderer {
         text(ctx, '🎯 AIM', apcx, apcy - apr - 8, 12, '#ffd76a', 'center');
         text(ctx, 'hold • drag • release to fire', apcx, apcy + apr + 16, 10, 'rgba(255,255,255,0.8)', 'center');
         this.uiRegions.aimPad = { cx: apcx, cy: apcy, r: apr, grabR: apGrab };
-        // Vertical power slider: drag up = more power.
-        const sw = 34, sh = 170, sx0 = 1044, sy0 = 300;
-        const pow = game.aim.power;
-        ctx.globalAlpha = op;
-        rr(ctx, sx0, sy0, sw, sh, 12); ctx.fillStyle = 'rgba(8,12,30,0.55)'; ctx.fill();
-        ctx.strokeStyle = 'rgba(255,255,255,0.6)'; ctx.lineWidth = 2; ctx.stroke();
-        const fillH = Math.max(0, sh * pow / 100);
-        if (fillH > 4) { rr(ctx, sx0 + 4, sy0 + sh - fillH - 2, sw - 8, fillH, 8); ctx.fillStyle = pow >= FULL_POWER ? '#ffd76a' : '#ff7a2f'; ctx.fill(); }
-        const ty = sy0 + sh - (pow / 100) * sh;
-        ctx.beginPath(); ctx.arc(sx0 + sw / 2, ty, 16 * ts, 0, Math.PI * 2);
-        ctx.fillStyle = '#fff'; ctx.fill(); ctx.strokeStyle = '#ff7a2f'; ctx.lineWidth = 3; ctx.stroke();
-        ctx.globalAlpha = 1;
-        text(ctx, 'POWER', sx0 + sw / 2, sy0 - 14, 12, '#ffd76a', 'center');
-        text(ctx, String(Math.round(pow)), sx0 + sw / 2, sy0 + sh + 16, 13, '#fff', 'center');
-        this.uiRegions.powerSlider = { x: sx0, y: sy0, w: sw, h: sh };
         // Big FIRE button (min 64px, here 160x90 at scale 1).
         const fw = 160 * ts, fh = 90 * ts, fx = W - 20 - fw, fy = 470;
         ctx.globalAlpha = op;
@@ -641,8 +672,11 @@ export class Renderer {
     text(ctx, `${p.name} — ${p.hero.name}`, tx, y + 16, 14, '#fff', 'left');
     bar(ctx, tx, y + 30, 200, 12, p.hp / p.maxHp, p.hp > p.maxHp * 0.5 ? '#58d158' : p.hp > p.maxHp * 0.25 ? '#ffb347' : '#ff5a4e');
     text(ctx, `${Math.max(0, Math.round(p.hp))}`, tx + 210, y + 36, 12, '#fff', 'left');
-    bar(ctx, tx, y + 48, 200, 8, p.energy / 100, '#a06bff');
-    text(ctx, `⚡${Math.round(p.energy)}${p.energy >= 100 ? ' ULT READY!' : ''}`, tx + 210, y + 52, 11, p.energy >= 100 ? '#ffd76a' : '#c9a7ff', 'left');
+    // v3.1 Skin Feature — the energy meter is now the POINT meter: hitting
+    // the enemy fills it (+8 per hit, +25 per turn); at 100 POINT the 💥 POW!
+    // button fires the ultimate. Shorter bar leaves room for the label.
+    bar(ctx, tx, y + 48, 140, 8, p.energy / 100, '#a06bff');
+    text(ctx, `POINT ${Math.round(p.energy)}${p.energy >= 100 ? ' • POW!' : ''}`, tx + 148, y + 52, 11, p.energy >= 100 ? '#ffd76a' : '#c9a7ff', 'left');
     if (p.shield > 0) text(ctx, `🛡 ${p.shield}`, x + 268, y + 16, 12, '#7ec8f7', 'center');
     void right;
   }

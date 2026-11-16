@@ -91,6 +91,68 @@ export class AudioSys {
   // v3 — fall into the abyss: long descending slide + deep thud.
   fall() { this._tone(600, 0.9, 'sawtooth', 0.3, 60); this._noise(0.5, 0.5, 300, 0.85); this._tone(70, 0.4, 'sine', 0.6, 30, 0.85); }
   fullpower() { this._noise(0.5, 0.6, 900); this._tone(110, 0.4, 'sawtooth', 0.35, 440); this._tone(880, 0.2, 'sine', 0.25, 1760, 0.1); }
+  // v3.1 Skin Feature — one synth recipe per skin theme (no audio files).
+  // `lastSkin` is set BEFORE the audio-context check so the probe can
+  // verify a skin sound was triggered even when audio is muted/unavailable.
+  skinShoot(theme) {
+    this.lastSkin = { kind: 'shoot', theme, t: Date.now() };
+    if (!this.ctx || this.muted) return;
+    const s = {
+      dragon: () => { this._tone(160, 0.3, 'sawtooth', 0.35, 50); this._noise(0.35, 0.5, 900); },
+      ice: () => { this._tone(1250, 0.25, 'sine', 0.3, 620); this._noise(0.15, 0.3, 5200); },
+      thunder: () => { this._noise(0.18, 0.6, 5200); this._tone(2100, 0.12, 'square', 0.3, 280); },
+      gold: () => { [523, 659, 784].forEach((f, i) => this._tone(f, 0.2, 'sine', 0.3, null, i * 0.05)); },
+      dark: () => { this._tone(90, 0.4, 'sine', 0.5, 30); this._tone(220, 0.3, 'sawtooth', 0.25, 55); },
+      toxic: () => { [300, 240, 360, 200].forEach((f, i) => this._tone(f, 0.08, 'sine', 0.25, null, i * 0.06)); },
+      holy: () => { [523, 659, 784, 1046].forEach((f, i) => this._tone(f, 0.25, 'triangle', 0.28, null, i * 0.07)); },
+      shadow: () => { this._noise(0.35, 0.35, 500); this._tone(440, 0.3, 'sine', 0.25, 110); },
+      cyber: () => { [880, 1108, 1318, 1760].forEach((f, i) => this._tone(f, 0.07, 'square', 0.22, null, i * 0.04)); },
+      plasma: () => { this._tone(700, 0.25, 'sawtooth', 0.3, 1800); this._noise(0.2, 0.3, 3600); },
+      matter: () => { this._tone(55, 0.5, 'sine', 0.55, 28); this._tone(880, 0.3, 'sine', 0.15, 1760, 0.1); },
+      lava: () => { this._tone(120, 0.35, 'sawtooth', 0.4, 40); this._noise(0.35, 0.5, 600); },
+    }[theme];
+    if (s) s(); else this.shoot('cannon');
+  }
+  skinBoom(theme, big = false) {
+    this.lastSkin = { kind: 'boom', theme, big, t: Date.now() };
+    if (!this.ctx || this.muted) return;
+    const b = big ? 1.6 : 1;
+    const s = {
+      dragon: () => { this._noise(0.7 * b, 0.8, 700); this._tone(140, 0.5 * b, 'sawtooth', 0.5, 45); this._tone(220, 0.35, 'sawtooth', 0.3, 70, 0.1); },
+      ice: () => { this._noise(0.4, 0.5, 6500); [1568, 1318, 1046].forEach((f, i) => this._tone(f, 0.3, 'sine', 0.28, f / 2, i * 0.08)); },
+      thunder: () => { this._noise(0.25, 0.7, 6000); this._tone(180, 0.4, 'sine', 0.6, 35); this._noise(0.4 * b, 0.6, 900, 0.1); },
+      gold: () => { [523, 659, 784, 1046, 1318].forEach((f, i) => this._tone(f, 0.35, 'triangle', 0.3, null, i * 0.08)); this._noise(0.5, 0.35, 2400); },
+      dark: () => { this._tone(70, 0.6 * b, 'sine', 0.7, 25); this._noise(0.5, 0.5, 400); this._tone(311, 0.4, 'square', 0.2, 155, 0.05); },
+      toxic: () => { [400, 320, 480, 260, 380].forEach((f, i) => this._tone(f, 0.1, 'sine', 0.28, null, i * 0.07)); this._noise(0.4, 0.4, 1200); },
+      holy: () => { [392, 523, 659, 784, 1046].forEach((f, i) => this._tone(f, 0.4, 'triangle', 0.3, null, i * 0.09)); },
+      shadow: () => { this._noise(0.6, 0.45, 350); this._tone(330, 0.5, 'sine', 0.3, 82); },
+      cyber: () => { [660, 880, 660, 1108, 880].forEach((f, i) => this._tone(f, 0.09, 'square', 0.25, null, i * 0.05)); this._noise(0.3, 0.4, 4200); },
+      plasma: () => { this._tone(900, 0.3, 'sawtooth', 0.35, 200); this._tone(300, 0.4, 'sawtooth', 0.3, 1200, 0.08); this._noise(0.4, 0.5, 2600); },
+      matter: () => { this._tone(45, 0.8 * b, 'sine', 0.7, 22); this._noise(0.6, 0.4, 300); this._tone(1760, 0.3, 'sine', 0.12, 880, 0.15); },
+      lava: () => { this._noise(0.7 * b, 0.8, 500); this._tone(100, 0.5 * b, 'sawtooth', 0.5, 30); this._noise(0.5, 0.4, 900, 0.12); },
+    }[theme];
+    if (s) s(); else this.explosion(b);
+  }
+  skinFullPower(theme) {
+    this.lastSkin = { kind: 'fullpower', theme, t: Date.now() };
+    if (!this.ctx || this.muted) return;
+    this.fullpower();
+    const s = {
+      dragon: () => { this._tone(180, 0.5, 'sawtooth', 0.4, 60); this._tone(90, 0.6, 'sawtooth', 0.4, 45, 0.1); },
+      ice: () => { [2093, 1760, 1568, 1318].forEach((f, i) => this._tone(f, 0.3, 'sine', 0.28, null, i * 0.07)); },
+      thunder: () => { this._noise(0.3, 0.7, 6500); this._tone(120, 0.5, 'sine', 0.6, 30, 0.05); },
+      gold: () => { [523, 659, 784, 1046, 1318, 1568].forEach((f, i) => this._tone(f, 0.35, 'triangle', 0.3, null, i * 0.08)); },
+      dark: () => { this._tone(60, 0.7, 'sine', 0.65, 24); this._tone(415, 0.5, 'square', 0.2, 207, 0.1); },
+      toxic: () => { [500, 400, 600, 300, 500, 250].forEach((f, i) => this._tone(f, 0.1, 'sine', 0.28, null, i * 0.06)); },
+      holy: () => { [392, 523, 659, 784, 1046, 1318].forEach((f, i) => this._tone(f, 0.4, 'triangle', 0.3, null, i * 0.09)); },
+      shadow: () => { this._noise(0.7, 0.45, 300); this._tone(262, 0.6, 'sine', 0.3, 65); },
+      cyber: () => { [523, 784, 1046, 784, 1318, 1568].forEach((f, i) => this._tone(f, 0.09, 'square', 0.24, null, i * 0.05)); },
+      plasma: () => { this._tone(1200, 0.4, 'sawtooth', 0.35, 150); this._tone(240, 0.5, 'sawtooth', 0.3, 1500, 0.1); },
+      matter: () => { this._tone(40, 0.9, 'sine', 0.7, 20); this._tone(2093, 0.4, 'sine', 0.12, 1046, 0.2); },
+      lava: () => { this._tone(110, 0.6, 'sawtooth', 0.5, 35); this._noise(0.6, 0.6, 600); },
+    }[theme];
+    if (s) s();
+  }
   ultimate() { [392, 523, 659, 784, 1046].forEach((f, i) => this._tone(f, 0.3, 'sawtooth', 0.25, null, i * 0.09)); this._noise(1.2, 0.5, 400, 0.1); }
   victory() { [523, 659, 784, 1046, 1318].forEach((f, i) => this._tone(f, 0.35, 'triangle', 0.35, null, i * 0.12)); }
   defeat() { [392, 330, 262, 196].forEach((f, i) => this._tone(f, 0.4, 'triangle', 0.3, null, i * 0.15)); }

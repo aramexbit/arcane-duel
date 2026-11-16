@@ -16,6 +16,11 @@ export const FULL_POWER = 100;      // v3 — POW at power 100 (was 950)
 // preview simulator and the blast damage test (was 34 in the preview,
 // 36 live — a 2px mismatch in the "same physics" claim).
 export const CHAR_HIT_R = 36;
+// v3.1 Skin Feature — HERO_SCALE shrinks the hero/monster sprites so the
+// map reads wider (Bomb Heroes 2 style: small characters, wide arena).
+// Hit detection (CHAR_HIT_R=36) and the AI solver are UNCHANGED — only the
+// visuals + muzzle offsets scale, so a shot that hit before still hits now.
+export const HERO_SCALE = 0.72;
 
 export const HEROES = {
   kairo: {
@@ -215,3 +220,103 @@ export function rng(seed) {
 }
 export function clamp(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
 export function lerp(a, b, t) { return a + (b - a) * t; }
+
+// ------------------------------------------------------------ v3.1 Skin Feature — Gems + weapon skins
+// Gems are the skin currency, earned by playing (persistent across matches).
+// Match-end formula (R1/R2 — token economy ala joshdaws/scorched-earth-clone,
+// MIT; breakdown shown on the game-over screen):
+//   Gems = floor(P1 damage / GEMS_PER_DAMAGE) + hits * GEMS_PER_HIT
+//        + (win ? GEMS_WIN_BONUS + streak * STREAK_BONUS_PER_WIN
+//               : GEMS_LOSS_BONUS)
+// Win streak: +1 per consecutive win (any real mode), reset to 0 on a loss;
+// training never touches the streak or Gems. Prices below are the initial
+// values from the spec and are configurable here.
+export const GEMS_PER_DAMAGE = 2;
+export const GEMS_PER_HIT = 2;
+export const GEMS_WIN_BONUS = 50;
+export const GEMS_LOSS_BONUS = 10;
+export const STREAK_BONUS_PER_WIN = 25;
+// Skin themes: one palette + one sound family per theme. The combat code
+// only ever reads `theme` + `colors` — a new skin never touches combat logic.
+export const SKIN_THEMES = {
+  default: { proj: '#ffffff', trail: 'rgba(255,255,255,0.55)', boom: '#ffb347', glow: '#ffb347' },
+  dragon:  { proj: '#ff5a1a', trail: 'rgba(255,140,50,0.85)',  boom: '#ff6a00', glow: '#ff8c2f' },
+  ice:     { proj: '#7ec8f7', trail: 'rgba(191,233,255,0.85)', boom: '#7ec8f7', glow: '#7ec8f7' },
+  thunder: { proj: '#c9a7ff', trail: 'rgba(160,107,255,0.85)', boom: '#c9a7ff', glow: '#a06bff' },
+  gold:    { proj: '#ffd76a', trail: 'rgba(255,224,138,0.85)', boom: '#ffd76a', glow: '#ffd76a' },
+  dark:    { proj: '#8a4dff', trail: 'rgba(138,77,255,0.85)',  boom: '#8a4dff', glow: '#8a4dff' },
+  toxic:   { proj: '#58d158', trail: 'rgba(126,231,135,0.85)', boom: '#58d158', glow: '#58d158' },
+  holy:    { proj: '#ffffff', trail: 'rgba(255,242,201,0.85)', boom: '#fff2c9', glow: '#fff2c9' },
+  shadow:  { proj: '#6b4d9e', trail: 'rgba(107,77,158,0.85)',  boom: '#3a2a5e', glow: '#6b4d9e' },
+  cyber:   { proj: '#50dcf0', trail: 'rgba(80,220,240,0.85)',  boom: '#50dcf0', glow: '#50dcf0' },
+  plasma:  { proj: '#ff5ad1', trail: 'rgba(255,157,245,0.85)', boom: '#ff5ad1', glow: '#ff5ad1' },
+  matter:  { proj: '#2a1a4e', trail: 'rgba(138,77,255,0.85)',  boom: '#1a0f2e', glow: '#8a4dff' },
+  lava:    { proj: '#ff3d00', trail: 'rgba(255,140,50,0.85)',  boom: '#ff3d00', glow: '#ff3d00' },
+};
+// R1 — rarity tiers completed with Rare (Common already existed). No skin
+// is Rare yet — the tier exists for future cheap skins; the filter shows an
+// honest "no Rare skins yet" state instead of a dead button.
+export const SKIN_RARITY_COLORS = { Common: '#bbbbbb', Rare: '#58a6ff', Epic: '#a06bff', Legendary: '#ffd76a' };
+export const SKIN_RARITY_ORDER = { Common: 0, Rare: 1, Epic: 2, Legendary: 3 };
+// R2 — Featured rotation (living shop economy ala scorchedearth-html5): one
+// skin per week, deterministic from the week number, at a flat discount.
+export const FEATURED_DISCOUNT = 0.20;
+// Weapon-name mapping (user's names -> weapon IDs that exist in WEAPONS).
+// Rocket Launcher -> cannon (the standard rocket-like ballistic weapon,
+// Kairo's Inferno Cannon). Bazooka -> meteor (heavy explosive).
+// Grenade -> cluster (splits into bomblets). Cannon -> boulder (heavy
+// mortar). Missile -> homing (chases the target).
+export const SKIN_WEAPON_NAMES = { cannon: 'Rocket Launcher', meteor: 'Bazooka', cluster: 'Grenade', boulder: 'Cannon', homing: 'Missile' };
+export const SKIN_WEAPONS = ['cannon', 'meteor', 'cluster', 'boulder', 'homing'];
+// Each skin: id (unique per weapon), name, rarity, price (Gems), theme, desc.
+// `owned` / `equipped` live in the save (new localStorage keys), never here.
+export const SKINS = {
+  cannon: [
+    { id: 'default', name: 'Default', rarity: 'Common', price: 0, theme: 'default', desc: 'The original rocket — classic blast, classic sound.' },
+    { id: 'fire-dragon', name: 'Fire Dragon', rarity: 'Epic', price: 300, theme: 'dragon', desc: 'A giant fire dragon rides the rocket. Roar included.' },
+    { id: 'ice-crystal', name: 'Ice Crystal', rarity: 'Epic', price: 300, theme: 'ice', desc: 'A giant ice crystal that shatters into frost.' },
+    { id: 'thunder-bolt', name: 'Thunder Bolt', rarity: 'Epic', price: 300, theme: 'thunder', desc: 'Purple lightning that chains across the sky.' },
+    { id: 'golden-glory', name: 'Golden Glory', rarity: 'Legendary', price: 500, theme: 'gold', desc: 'Holy golden light — a radiant explosion.' },
+    { id: 'dark-flame', name: 'Dark Flame', rarity: 'Legendary', price: 500, theme: 'dark', desc: 'Dark purple fire from the shadow realm.' },
+  ],
+  meteor: [
+    { id: 'default', name: 'Default', rarity: 'Common', price: 0, theme: 'default', desc: 'The original meteor — classic blast, classic sound.' },
+    { id: 'fire-dragon', name: 'Fire Dragon', rarity: 'Epic', price: 300, theme: 'dragon', desc: 'A blazing dragon meteor.' },
+    { id: 'ice-dragon', name: 'Ice Dragon', rarity: 'Epic', price: 300, theme: 'ice', desc: 'A frozen dragon meteor.' },
+    { id: 'thunder', name: 'Thunder', rarity: 'Epic', price: 300, theme: 'thunder', desc: 'A storm meteor wrapped in lightning.' },
+  ],
+  cluster: [
+    { id: 'default', name: 'Default', rarity: 'Common', price: 0, theme: 'default', desc: 'The original cluster — classic blast, classic sound.' },
+    { id: 'toxic', name: 'Toxic', rarity: 'Epic', price: 300, theme: 'toxic', desc: 'A venom cloud that bursts into spores.' },
+    { id: 'holy', name: 'Holy', rarity: 'Epic', price: 300, theme: 'holy', desc: 'Sacred light that cleanses the field.' },
+    { id: 'shadow', name: 'Shadow', rarity: 'Epic', price: 300, theme: 'shadow', desc: 'A whisper of darkness that swallows the blast.' },
+  ],
+  boulder: [
+    { id: 'default', name: 'Default', rarity: 'Common', price: 0, theme: 'default', desc: 'The original boulder — classic blast, classic sound.' },
+    { id: 'golden-cannon', name: 'Golden Cannon', rarity: 'Legendary', price: 500, theme: 'gold', desc: 'A golden cannonball of pure light.' },
+    { id: 'lava-cannon', name: 'Lava Cannon', rarity: 'Epic', price: 300, theme: 'lava', desc: 'Molten rock that erupts like a volcano.' },
+  ],
+  homing: [
+    { id: 'default', name: 'Default', rarity: 'Common', price: 0, theme: 'default', desc: 'The original homing orb — classic blast, classic sound.' },
+    { id: 'cyber', name: 'Cyber', rarity: 'Epic', price: 300, theme: 'cyber', desc: 'A neon cyber orb from the digital grid.' },
+    { id: 'plasma', name: 'Plasma', rarity: 'Epic', price: 300, theme: 'plasma', desc: 'A pulsing plasma orb that crackles pink.' },
+    { id: 'dark-matter', name: 'Dark Matter', rarity: 'Legendary', price: 500, theme: 'matter', desc: 'A void orb that bends the light around it.' },
+  ],
+};
+export function skinById(weaponId, skinId) {
+  return (SKINS[weaponId] || []).find(s => s.id === skinId) || (SKINS[weaponId] || [])[0] || null;
+}
+// R2 — Featured skin of the week: all buyable skins in config order, one
+// picked deterministically by week number (weeks since the Unix epoch).
+// Same week => same skin, same discounted price, on every device.
+export const ALL_SKINS = SKIN_WEAPONS.flatMap(w => (SKINS[w] || []).filter(s => s.id !== 'default').map(s => ({ weaponId: w, ...s })));
+export function currentWeekId() { return Math.floor(Date.now() / 604800000); }
+export function featuredSkin(weekId) {
+  const pick = ALL_SKINS[((weekId % ALL_SKINS.length) + ALL_SKINS.length) % ALL_SKINS.length];
+  return { ...pick, originalPrice: pick.price, price: Math.round(pick.price * (1 - FEATURED_DISCOUNT)) };
+}
+// Days/hours left until the featured skin rotates (end of the current week).
+export function featuredTimeLeft() {
+  const ms = 604800000 - (Date.now() % 604800000);
+  return { days: Math.floor(ms / 86400000), hours: Math.floor((ms % 86400000) / 3600000) };
+}

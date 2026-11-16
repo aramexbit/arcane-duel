@@ -1,5 +1,5 @@
 // ARCANE DUEL — game state machine, combat, skills, ultimates, AI, combos.
-import { W, WORLD_W, H, GRAVITY, TURN_TIME, MAX_HP, CHAR_HIT_R, HEROES, WEAPONS, WEAPON_ORDER, ARENAS, ARENA_ORDER, DIFFICULTY, MOVE_STEPS, MOVE_SPEED, TELEPORT_RANGE, TELEPORT_COST, TRAP_COST, TRAP_TURNS, TRAP_RADIUS, HEAL_COST, HEAL_AMOUNT, FULL_POWER, POWER_VEL, FULL_POWER_MOVES, SHOP_PRICES, FREE_WEAPONS, WIN_CREDITS, AI_SHOP_OWNED, ELITE_HP, ELITE_DMG_MUL, SURVIVAL_ROSTER, SURVIVAL_DIFFS, SURVIVAL_ARENAS, SURVIVAL_HP_PER_WAVE, SURVIVAL_DMG_PER_WAVE, CHALLENGES, SPEEDRUN_MAX_TURNS, QUALITY, clamp, rng } from './config.js';
+import { W, WORLD_W, H, GRAVITY, TURN_TIME, MAX_HP, CHAR_HIT_R, HERO_SCALE, HEROES, WEAPONS, WEAPON_ORDER, ARENAS, ARENA_ORDER, DIFFICULTY, MOVE_STEPS, MOVE_SPEED, TELEPORT_RANGE, TELEPORT_COST, TRAP_COST, TRAP_TURNS, TRAP_RADIUS, HEAL_COST, HEAL_AMOUNT, FULL_POWER, POWER_VEL, FULL_POWER_MOVES, SHOP_PRICES, FREE_WEAPONS, WIN_CREDITS, AI_SHOP_OWNED, ELITE_HP, ELITE_DMG_MUL, SURVIVAL_ROSTER, SURVIVAL_DIFFS, SURVIVAL_ARENAS, SURVIVAL_HP_PER_WAVE, SURVIVAL_DMG_PER_WAVE, CHALLENGES, SPEEDRUN_MAX_TURNS, QUALITY, SKIN_THEMES, SKIN_WEAPONS, GEMS_PER_DAMAGE, GEMS_PER_HIT, GEMS_WIN_BONUS, GEMS_LOSS_BONUS, STREAK_BONUS_PER_WIN, skinById, clamp, rng } from './config.js';
 import { Terrain, simulateShot, solveShot } from './engine.js';
 
 const SPRITE_W = 120, SPRITE_H = 150;
@@ -15,7 +15,7 @@ export class Game {
     this.particles = []; this.floaters = []; this.zones = [];
     this.banner = null; this.shake = 0; this.cine = null;
     this.time = 0;
-    this.stats = { turns: 0, damage: [0, 0], combos: 0 };
+    this.stats = { turns: 0, damage: [0, 0], combos: 0, hits: 0 };
     // v2: reflect traps, teleport targeting, AI telegraph, walk meter.
     this.traps = []; this.teleportMode = false; this.moveDir = 0;
     this.aiTelegraph = null; this.aiTelegraphSeen = false; this.aiUtils = 0;
@@ -58,6 +58,24 @@ export class Game {
     // across sessions; crates/barrels drop into the arena every few turns.
     this.crates = [];
     this.battleCoins = 0;
+    // v3.1 Skin Feature — Gems (skin currency) + owned/equipped skins.
+    // NEW keys (arcane-duel-gems, arcane-duel-skins-owned,
+    // arcane-duel-skins-equipped); the old keys are never touched.
+    this.gems = 0;
+    try { this.gems = parseInt(localStorage.getItem('arcane-duel-gems') || '0', 10) || 0; } catch (e) { this.gems = 0; }
+    // R1 — consecutive-win streak (NEW key 'arcane-duel-streak'; old keys
+    // untouched). +1 per win in any real mode, reset to 0 on a loss.
+    this.streak = 0;
+    try { this.streak = parseInt(localStorage.getItem('arcane-duel-streak') || '0', 10) || 0; } catch (e) { this.streak = 0; }
+    this.skinOwned = new Set();
+    try { const v = JSON.parse(localStorage.getItem('arcane-duel-skins-owned') || '[]'); if (Array.isArray(v)) this.skinOwned = new Set(v.filter(x => typeof x === 'string')); } catch (e) { /* ignore */ }
+    this.skinEquipped = {};
+    try { const v = JSON.parse(localStorage.getItem('arcane-duel-skins-equipped') || '{}'); if (v && typeof v === 'object') this.skinEquipped = v; } catch (e) { /* ignore */ }
+    // Default skins are always owned (even on a save from before skins existed).
+    for (const w of SKIN_WEAPONS) this.skinOwned.add(w + ':default');
+    this.battleGems = 0;
+    this.lastSkinFx = null; // v3.1 Skin Feature — last skin explosion FX (probe reads it)
+    this.lastPowerBar = null; // v3.1 Skin Feature — small power bar above the active hero (probe reads it)
     try { this.coins = parseInt(localStorage.getItem('arcane-duel-coins') || '0', 10) || 0; }
     catch (e) { this.coins = 0; }
   }
@@ -69,8 +87,13 @@ export class Game {
     this.terrain = null; this.players = []; this.projectiles = []; this.pending = [];
     this.turn = 0; this.phase = 'aim'; this.phaseT = 0; this.turnTimer = TURN_TIME;
     this.wind = 0; this.aim = { angle: 55, power: 65 }; this.selectedWeapon = 'cannon';
+    // v3.1 Skin Feature + R1/R2 — per-battle stats reset (they used to
+    // accumulate across battles, which corrupted per-match Gems + the
+    // game-over screen). `hits` counts P1 shots that damaged the foe.
+    this.stats = { turns: 0, damage: [0, 0], combos: 0, hits: 0 };
+    this.lastGemBreakdown = null;
     this.campaignIndex = 0; this.campaignHero = null; this.campaignDiff = null;
-    this.trainingTip = 0; this.winner = null; this.crates = []; this.battleCoins = 0;
+    this.trainingTip = 0; this.winner = null; this.crates = []; this.battleCoins = 0; this.battleGems = 0; this.lastSkinFx = null;
     this.traps = []; this.teleportMode = false; this.moveDir = 0;
     this.aiTelegraph = null; this.aiUtils = 0;
     this.emoteBubble = null; // v2.1
@@ -165,6 +188,44 @@ export class Game {
     this.audio.skill();
     return true;
   }
+
+  // ------------------------------------------------------------ v3.1 Skin Feature: Gems + skins
+  // Skins are COSMETIC ONLY — they never change damage, radius or any stat.
+  // Owned keys are "weaponId:skinId" (e.g. "cannon:fire-dragon").
+  skinKey(weaponId, skinId) { return weaponId + ':' + skinId; }
+  equippedSkin(weaponId) { return skinById(weaponId, this.skinEquipped[weaponId] || 'default'); }
+  ownsSkin(weaponId, skinId) { return skinId === 'default' || this.skinOwned.has(this.skinKey(weaponId, skinId)); }
+  _saveSkins() {
+    try {
+      localStorage.setItem('arcane-duel-gems', String(this.gems));
+      localStorage.setItem('arcane-duel-skins-owned', JSON.stringify([...this.skinOwned]));
+      localStorage.setItem('arcane-duel-skins-equipped', JSON.stringify(this.skinEquipped));
+    } catch (e) { /* ignore */ }
+  }
+  addGems(n) {
+    this.gems = Math.max(0, this.gems + n); this.battleGems += n;
+    try { localStorage.setItem('arcane-duel-gems', String(this.gems)); } catch (e) { /* ignore */ }
+  }
+  _saveStreak() { try { localStorage.setItem('arcane-duel-streak', String(this.streak)); } catch (e) { /* ignore */ } }
+  buySkin(weaponId, skinId, priceOverride) {
+    const skin = skinById(weaponId, skinId);
+    if (!skin || skinId === 'default' || this.ownsSkin(weaponId, skinId)) return false;
+    // R2 — Featured buys pass the discounted weekly price; anything else
+    // pays the config price. The caller computes the discount, never the UI.
+    const price = (priceOverride != null ? priceOverride : skin.price);
+    if (this.gems < price) return false;
+    // Single deduction: the ownsSkin check above + the disabled Buy button
+    // after purchase make a double charge impossible.
+    this.gems -= price; this.skinOwned.add(this.skinKey(weaponId, skinId)); this._saveSkins();
+    this.audio.skill();
+    return true;
+  }
+  equipSkin(weaponId, skinId) {
+    if (!this.ownsSkin(weaponId, skinId)) return false;
+    this.skinEquipped[weaponId] = skinId; this._saveSkins(); this.audio.click();
+    return true;
+  }
+  unequipSkin(weaponId) { this.skinEquipped[weaponId] = 'default'; this._saveSkins(); this.audio.click(); return true; }
 
   // ------------------------------------------------------------ setup
   startBattle(opts) {
@@ -358,7 +419,10 @@ export class Game {
   }
   _muzzle(p) {
     const mz = p.hero.muzzle;
-    return { x: p.x + (p.facing === 1 ? mz.x - 60 : 60 - mz.x), y: p.y - 140 + mz.y };
+    // v3.1 Skin Feature — the sprite is HERO_SCALE of its old size, so the
+    // muzzle (gun tip) scales with it; physics otherwise unchanged (the AI
+    // solver already aims from the player position, not the muzzle).
+    return { x: p.x + (p.facing === 1 ? mz.x - 60 : 60 - mz.x) * HERO_SCALE, y: p.y - 140 * HERO_SCALE + mz.y * HERO_SCALE };
   }
   worldAngle() { const p = this.active(); return p.facing === 1 ? this.aim.angle : 180 - this.aim.angle; }
   selectWeapon(id) {
@@ -402,10 +466,15 @@ export class Game {
     // v3 — FULL POWER: each weapon unleashes its OWN special move at power 100.
     const full = this.aim.power >= FULL_POWER;
     const fpMove = full ? FULL_POWER_MOVES[weaponId] : null;
+    // v3.1 Skin Feature — the shooter's equipped skin rides with the shot
+    // (cosmetic only: it changes the look + sound, never the damage).
+    const skin = this.equippedSkin(weaponId);
+    const skinTheme = skin ? skin.theme : 'default';
     if (full && fpMove) {
       this.setBanner(`🔥 ${fpMove.name.toUpperCase()}!`, `${p.hero.name} unleashes ${fpMove.name} — ${fpMove.desc}`, 2.0, '#ffd76a');
-      this.audio.fullpower();
-    } else this.audio.shoot(weaponId); // Android v2 Tahap A — per-weapon shot sound
+      if (skinTheme !== 'default') this.audio.skinFullPower(skinTheme); else this.audio.fullpower();
+    } else if (skinTheme !== 'default') this.audio.skinShoot(skinTheme);
+    else this.audio.shoot(weaponId); // Android v2 Tahap A — per-weapon shot sound
     // v3 — recoil: the hero is knocked back opposite the shot + camera shake.
     p.x = clamp(p.x - p.facing * 8, 40, WORLD_W - 40);
     p.y = this.terrain.groundY(p.x);
@@ -414,7 +483,7 @@ export class Game {
     const mkProj = (a, kindOverride) => ({
       x: m.x, y: m.y, angle: a, power: pw, kind: kindOverride || w.kind,
       weapon: weaponId, owner: this.turn, elem: w.elem || null, trail: [],
-      fullPower: full, fullPowerMove: fpMove,
+      fullPower: full, fullPowerMove: fpMove, skinTheme,
       weight: w.weight ?? 1, windRes: w.windRes ?? 0,
     });
     if (full && fpMove && fpMove.effect === 'swarm') {
@@ -434,7 +503,7 @@ export class Game {
         const foe = this.opponent();
         const rainKind = fpMove.elem === 'fire' ? 'meteor' : fpMove.elem === 'arcane' ? 'starbolt' : fpMove.elem === 'earth' ? 'boulder' : 'cluster';
         for (let i = 0; i < fpMove.count; i++) {
-          this.pending.push({ delay: 0.15 + i * 0.25, kind: rainKind, x: foe.x - 60 + i * 60, y: 40, owner: this.turn, fpMove });
+          this.pending.push({ delay: 0.15 + i * 0.25, kind: rainKind, x: foe.x - 60 + i * 60, y: 40, owner: this.turn, fpMove, skinTheme });
         }
       }
     }
@@ -707,6 +776,8 @@ export class Game {
     // v2.1: floating damage number — bigger + gold on crit.
     this._floater(p.x, p.y - 130, `-${dmg}${crit ? ' CRIT!' : ''}`, crit ? '#ffd76a' : '#ff6a5e', crit ? 26 : 20);
     this.stats.damage[this.turn] += dmg;
+    // R1 — hit counter: P1 damaging the foe (own fall/trap damage excluded).
+    if (this.turn === 0 && idx === 1) this.stats.hits++;
     // Duel Coins: the attacker earns coins for damage dealt.
     if (idx !== this.turn) this.addCoins(Math.max(1, Math.floor(dmg / 5)));
     if (attacker && idx !== this.turn) attacker.energy = clamp(attacker.energy + 8, 0, 100);
@@ -730,7 +801,13 @@ export class Game {
       this._floater(x, y - 60, 'FIRE+WIND!', '#ff9d5e', 22);
       this.audio.firewind();
     }
-    this.audio.explosion(R > 70 ? 1.6 : 1);
+    // v3.1 Skin Feature — a skinned blast plays its themed sound instead of
+    // the generic explosion (one sound, not two); the themed particles layer
+    // on top of the base blast (cosmetic only: damage/radius already fixed).
+    if (opts.skinTheme && opts.skinTheme !== 'default') {
+      this.audio.skinBoom(opts.skinTheme, !!opts.fullPowerSkin);
+      this._skinBoomFx(x, y, R, opts.skinTheme, !!opts.fullPowerSkin);
+    } else this.audio.explosion(R > 70 ? 1.6 : 1);
     this.shake = Math.max(this.shake, R > 70 ? 12 : 7);
     this._burst(x, y, def.elem === 'fire' ? '#ff8c2f' : def.elem === 'arcane' ? '#a06bff' : def.elem === 'earth' ? '#8a7a5e' : '#ffb347', Math.round(R / 2.4));
     this._burst(x, y, '#3a3a3a', Math.round(R / 3), true);
@@ -867,6 +944,40 @@ export class Game {
       if (gy > p.y + 6) { p.falling = true; p.fallStart = p.y; p.vy = 0; }
     }
     void combo;
+  }
+  // v3.1 Skin Feature — themed explosion FX for one skin blast. Reuses the
+  // existing particle system (_burst) + lightning FX; the `big` flag is the
+  // Full Power (power 100) variant: more particles, more shake, bigger label.
+  _skinBoomFx(x, y, R, theme, big = false) {
+    const c = SKIN_THEMES[theme] || SKIN_THEMES.default;
+    const n = big ? 2 : 1;
+    this.lastSkinFx = { theme, big, x, y, t: this.time };
+    const names = { dragon: '🐉 FIRE DRAGON!', ice: '❄ ICE CRYSTAL!', thunder: '⚡ THUNDER!', gold: '✨ GOLDEN GLORY!', dark: '🌑 DARK FLAME!', toxic: '☠ TOXIC!', holy: '😇 HOLY!', shadow: '👻 SHADOW!', cyber: '🤖 CYBER!', plasma: '🔮 PLASMA!', matter: '🌌 DARK MATTER!', lava: '🌋 LAVA!' };
+    this._burst(x, y, c.boom, Math.round(R / 2) * n);
+    this._burst(x, y, c.glow, Math.round(R / 3) * n);
+    if (theme === 'thunder') {
+      // Chain lightning: 3 bolts fan out from the blast (reuses lightningFx).
+      for (let k = 0; k < 3; k++) {
+        const a = -Math.PI / 2 + (k - 1) * 0.7;
+        const tx = x + Math.cos(a) * (R + 60), ty = y + Math.sin(a) * (R + 60) - 40;
+        const pts = [];
+        for (let i = 0; i <= 6; i++) { const t = i / 6; pts.push([x + (tx - x) * t + (i > 0 && i < 6 ? (Math.random() - 0.5) * 30 : 0), y + (ty - y) * t + (i > 0 && i < 6 ? (Math.random() - 0.5) * 30 : 0)]); }
+        this.lightningFx.push({ pts, t: 0, dur: 0.45 });
+      }
+      this.shake = Math.max(this.shake, big ? 16 : 10);
+    } else if (theme === 'gold') {
+      this.shake = Math.max(this.shake, big ? 14 : 8);
+      this._burst(x, y, '#ffffff', Math.round(R / 4) * n);
+    } else if (theme === 'dragon' || theme === 'lava') {
+      this.shake = Math.max(this.shake, big ? 16 : 10);
+      this._burst(x, y - 20, '#ff8c2f', Math.round(R / 3) * n);
+    } else if (theme === 'dark' || theme === 'matter' || theme === 'shadow') {
+      this._burst(x, y, '#3a2a5e', Math.round(R / 3) * n, true);
+      this.shake = Math.max(this.shake, big ? 14 : 8);
+    } else if (theme === 'ice') {
+      this._burst(x, y, '#bfe9ff', Math.round(R / 3) * n);
+    }
+    if (names[theme]) this._floater(x, y - R - 30, names[theme], c.glow, big ? 26 : 20);
   }
   _burst(x, y, color, n, smoke = false) {
     // Android v2 Tahap B — particle cap from the graphics quality setting
@@ -1036,6 +1147,29 @@ export class Game {
       if (this.mode === 'challenge') { if (this.challengeResult === 'complete') this.addCoins(WIN_CREDITS.challenge); }
       else this.addCoins(WIN_CREDITS[this.mode] ?? 50);
     }
+    // v3.1 Skin Feature + R1/R2 — Gems breakdown (shown on the game-over
+    // screen): damage + hits + win/loss bonus + win-streak bonus. Training
+    // pays nothing and never touches the streak (no stakes); versus /
+    // campaign / survival / challenge do. Streak: +1 per consecutive win,
+    // reset to 0 on a loss. Rates live in config.js.
+    this.lastGemBreakdown = null;
+    if (this.mode !== 'training') {
+      const dmg = this.stats.damage[0] || 0;
+      const hits = this.stats.hits || 0;
+      const damageGems = Math.floor(dmg / GEMS_PER_DAMAGE);
+      const hitGems = hits * GEMS_PER_HIT;
+      let bonus = GEMS_LOSS_BONUS, bonusLabel = 'Loss bonus', streakGems = 0;
+      if (winnerIdx === 0) {
+        this.streak += 1; this._saveStreak();
+        bonus = GEMS_WIN_BONUS; bonusLabel = 'Win bonus';
+        streakGems = this.streak * STREAK_BONUS_PER_WIN;
+      } else {
+        this.streak = 0; this._saveStreak();
+      }
+      const total = damageGems + hitGems + bonus + streakGems;
+      this.lastGemBreakdown = { damage: dmg, damageGems, hits, hitGems, bonus, bonusLabel, streak: this.streak, streakGems, total, won: winnerIdx === 0 };
+      this.addGems(total);
+    }
     this.state = 'over';
     if (this.ui.onGameOver) this.ui.onGameOver({
       winnerIdx, won, mode: this.mode,
@@ -1043,7 +1177,8 @@ export class Game {
       survivalWave: this.survivalWave, survivalBest: this.survivalBest,
       challengeId: this.challengeId, challengeResult: this.challengeResult,
       challengeFailReason: this.challengeFailReason,
-      stats: { turns: this.stats.turns, damage: [...this.stats.damage], combos: this.stats.combos },
+      stats: { turns: this.stats.turns, damage: [...this.stats.damage], combos: this.stats.combos, hits: this.stats.hits },
+      gemBreakdown: this.lastGemBreakdown,
       winnerName: this.players[winnerIdx].name,
       winnerHero: this.players[winnerIdx].hero,
     });
@@ -1276,7 +1411,7 @@ export class Game {
   _spawnPending(pd) {
     const foe = this.players[1 - pd.owner];
     const mk = (kind, x, y, vx, vy, weapon, elem) => {
-      const pr = { x, y, vx, vy, angle: 0, power: 0, kind, weapon, owner: pd.owner, elem: elem || null, t: 0, dead: false, trail: [], subSpawned: false, weight: 1, windRes: 0 };
+      const pr = { x, y, vx, vy, angle: 0, power: 0, kind, weapon, owner: pd.owner, elem: elem || null, t: 0, dead: false, trail: [], subSpawned: false, weight: 1, windRes: 0, skinTheme: pd.skinTheme || 'default' };
       if (pd.fpMove) { pr.fullPowerMove = pd.fpMove; pr.fullPower = true; }
       this.projectiles.push(pr);
     };
@@ -1307,7 +1442,7 @@ export class Game {
       pr.subSpawned = true;
       for (let i = 0; i < 5; i++) {
         const a = -Math.PI / 2 + (i - 2) * 0.35;
-        this.projectiles.push({ x: pr.x, y: pr.y, vx: Math.cos(a) * (120 + Math.random() * 120), vy: Math.sin(a) * 160, angle: 0, power: 0, kind: 'bomblet', weapon: 'cluster', owner: pr.owner, elem: null, t: 0, dead: false, trail: [], subSpawned: true });
+        this.projectiles.push({ x: pr.x, y: pr.y, vx: Math.cos(a) * (120 + Math.random() * 120), vy: Math.sin(a) * 160, angle: 0, power: 0, kind: 'bomblet', weapon: 'cluster', owner: pr.owner, elem: null, t: 0, dead: false, trail: [], subSpawned: true, skinTheme: pr.skinTheme || 'default' });
       }
       this._burst(pr.x, pr.y, '#ffb347', 10);
       return;
@@ -1332,7 +1467,7 @@ export class Game {
       // Android v2 Tahap A — beam slows, homing chains (see explode()).
       const tgtIdx = this.players.indexOf(target);
       this.explode(pr.x, pr.y, { dmg: def.dmg, radius: def.radius, elem: def.elem }, pr.owner,
-        { slow: pr.weapon === 'beam', chain: pr.weapon === 'homing', chainTarget: tgtIdx });
+        { slow: pr.weapon === 'beam', chain: pr.weapon === 'homing', chainTarget: tgtIdx, skinTheme: pr.skinTheme, fullPowerSkin: !!(pr.fullPower && pr.skinTheme && pr.skinTheme !== 'default') });
       // v3 — quake moves shatter the ground where they land.
       if (fpMove && fpMove.effect === 'quake') {
         this.terrain.crater(pr.x, this.terrain.groundY(pr.x), def.radius * 1.2);
@@ -1342,7 +1477,7 @@ export class Game {
       // v2.1: a blast that hurts nobody shows a floating MISS.
       const hpBefore = this.players.map(p => p.hp);
       const shBefore = this.players.map(p => p.shield);
-      this.explode(pr.x, pr.y, def, pr.owner, { noCrater: pr.kind === 'beam', slow: pr.weapon === 'beam', chain: pr.weapon === 'homing', chainTarget: -1 });
+      this.explode(pr.x, pr.y, def, pr.owner, { noCrater: pr.kind === 'beam', slow: pr.weapon === 'beam', chain: pr.weapon === 'homing', chainTarget: -1, skinTheme: pr.skinTheme, fullPowerSkin: !!(pr.fullPower && pr.skinTheme && pr.skinTheme !== 'default') });
       if (fpMove && fpMove.effect === 'quake') {
         this.terrain.crater(pr.x, this.terrain.groundY(pr.x), def.radius * 1.2);
         this.shake = Math.max(this.shake, 16);

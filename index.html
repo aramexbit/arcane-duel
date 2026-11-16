@@ -64,9 +64,14 @@
     /* Menu footer lines carry inline margins — tighten them on short screens. */
     #ov-menu .menu-foot, #menu-coins, #menu-progress { margin-top: 4px !important; }
     .btn.small { padding: 6px 12px; font-size: 13px; margin: 4px; }
-    /* Menu: 11 stacked buttons (~720px) never fit 390px — two columns do. */
+    /* Menu: 12 stacked buttons (~720px) never fit 390px — two columns do. */
     #ov-menu .panel { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 10px; }
-    #ov-menu .btn { width: auto; margin: 3px 0; }
+    #ov-menu .btn { width: auto; margin: 2px 0; padding: 4px 12px; }
+    /* v3.1 Skin Feature — the 12th menu button (Skin Collection) pushed
+       the menu 18px past 390px (measured 408 vs 390). Tighten further:
+       smaller title, slimmer buttons, and hide the empty progress line. */
+    #ov-menu h1 { font-size: 28px; }
+    #menu-progress:empty { display: none; }
     .cards { gap: 10px; margin: 4px 0 6px; }
     .card { width: 120px; padding: 5px; }
     .card img { width: 52px; height: 64px; }
@@ -107,6 +112,7 @@
       <button class="btn" data-act="versus">👥 Local Multiplayer</button>
       <button class="btn" data-act="training">🎯 Training</button>
       <button class="btn" data-act="shop">🛒 Weapon Shop</button>
+      <button class="btn" data-act="collection">🎨 Skin Collection</button>
       <button class="btn ghost" data-act="howto">How to Play</button>
       <button class="btn ghost" data-act="settings">Settings</button>
       <button class="btn ghost" data-act="credits">Credits</button>
@@ -159,9 +165,50 @@
   <div class="ov hidden" id="ov-shop">
     <div class="panel">
       <h2>🛒 Weapon Shop</h2>
-      <div id="shop-coins" style="font-size:15px;color:#ffd76a;margin-bottom:6px;">🪙 0 Duel Coins</div>
+      <div id="shop-coins" style="font-size:15px;color:#ffd76a;margin-bottom:2px;">🪙 0 Duel Coins</div>
+      <div id="shop-gems" style="font-size:15px;color:#50dcf0;margin-bottom:6px;">💎 0 Gems</div>
+      <div class="pickrow" id="shop-tabs">
+        <button class="pick sel" id="shop-tab-weapons">🔫 Weapons</button>
+        <button class="pick" id="shop-tab-featured">⭐ Featured</button>
+        <button class="pick" id="shop-tab-skins">✨ Weapon Skins</button>
+      </div>
       <div id="shop-list" style="max-width:640px;"></div>
+      <div id="shop-featured" class="hidden" style="max-width:640px;">
+        <div id="featured-content"></div>
+        <div id="featured-detail" style="background:rgba(255,255,255,0.06);border-radius:10px;padding:10px;margin:6px 0;">
+          <canvas id="featured-preview" width="320" height="180" style="border:2px solid #ffd76a;border-radius:10px;background:#0b0e1e;max-width:100%;"></canvas>
+          <div id="featured-preview-info" style="font-size:13px;color:#ddd;margin-top:6px;">This week's featured skin — preview plays automatically.</div>
+          <button class="btn small" id="featured-preview-sound">🔊 Replay Sound</button>
+        </div>
+      </div>
+      <div id="shop-skins" class="hidden" style="max-width:640px;">
+        <div class="pickrow" id="shop-skin-weapons"></div>
+        <div class="pickrow" id="shop-skin-filters"></div>
+        <div id="shop-skin-detail" style="background:rgba(255,255,255,0.06);border-radius:10px;padding:10px;margin:6px 0;">
+          <canvas id="skin-preview" width="320" height="180" style="border:2px solid #ffd76a;border-radius:10px;background:#0b0e1e;max-width:100%;"></canvas>
+          <div id="skin-preview-info" style="font-size:13px;color:#ddd;margin-top:6px;">Select a skin to preview its Full Power effect.</div>
+          <button class="btn small" id="skin-preview-sound">🔊 Replay Sound</button>
+        </div>
+        <div id="shop-skin-list"></div>
+      </div>
       <button class="btn" id="shop-back">Back</button>
+    </div>
+  </div>
+
+  <div class="ov hidden" id="ov-collection">
+    <div class="panel">
+      <h2>🎨 Skin Collection</h2>
+      <div id="collection-gems" style="font-size:15px;color:#50dcf0;margin-bottom:6px;">💎 0 Gems</div>
+      <div class="pickrow" id="collection-weapons"></div>
+      <div class="pickrow" id="collection-filters"></div>
+      <div class="pickrow" id="collection-sort"></div>
+      <div id="collection-detail" style="background:rgba(255,255,255,0.06);border-radius:10px;padding:10px;margin:6px 0;max-width:640px;">
+        <canvas id="collection-preview" width="320" height="180" style="border:2px solid #ffd76a;border-radius:10px;background:#0b0e1e;max-width:100%;"></canvas>
+        <div id="collection-preview-info" style="font-size:13px;color:#ddd;margin-top:6px;">Select a skin to preview its Full Power effect.</div>
+        <button class="btn small" id="collection-preview-sound">🔊 Replay Sound</button>
+      </div>
+      <div id="collection-grid" style="max-width:640px;"></div>
+      <button class="btn" id="collection-back">Back</button>
     </div>
   </div>
 
@@ -220,7 +267,9 @@
         <b>Challenges:</b> three fixed duels with a special win condition — <b>One-Shot</b> (win with a single shot), <b>No Miss</b> (win without a single MISS), <b>Speed Run</b> (win within 6 of your own turns). Complete one for +50 🪙.<br>
         <b>Weather:</b> snow drifts in Crystal Valley, embers rise in Ember Canyon, light motes float in the Sky Temple. Graphics quality (Settings) controls particles and weather — Low turns weather off.<br>
         <b>Offline:</b> the game installs as an app (PWA) and works fully offline after the first load. Export / Import your save from Settings.
-        <b>Touch (phone):</b> left virtual joystick to walk, drag on the field to aim, vertical POWER slider on the right edge, big 🔥 FIRE button. <b>🎯 AIM pad (left, above the joystick): hold it to aim — drag up for a higher arc, drag right for more power — release to fire!</b> Tap <b>II</b> to pause, <b>🔍 ZOOM OUT</b> to see the whole arena (or press <span class="kbd">C</span>). Two fingers work at once — steer with one thumb, aim and fire with the other.<br>
+        <b>Touch (phone):</b> left virtual joystick to walk, drag on the field to aim, big 🔥 FIRE button. <b>🎯 AIM pad (left, above the joystick): hold it to aim — drag up for a higher arc, drag right for more power — release to fire!</b> Power is shown as a small bar above your hero. Tap <b>II</b> to pause, <b>🔍 ZOOM OUT</b> to see the whole arena (or press <span class="kbd">C</span>). Two fingers work at once — steer with one thumb, aim and fire with the other.<br>
+        <b>POINT / POW:</b> hitting the enemy fills your <b>POINT</b> meter (+8 per hit, +25 every turn). At <b>100 POINT</b> a 💥 <b>POW!</b> button appears — tap it to unleash your ultimate jurus!<br>
+        <b>Skins:</b> buy weapon skins in the <b>🛒 Weapon Shop</b> with 💎 <b>Gems</b> earned from battles — damage ÷ 2, +2 per hit, +50 win bonus, +25 per win in your win streak (loss: +10). The game-over screen shows the full breakdown. Skins are cosmetic only — they change the look, trail, explosion and sound, never the damage. Selecting a skin auto-plays its Full Power preview! <b>⭐ Featured:</b> one skin each week at 20% off. <b>🎨 Skin Collection:</b> browse everything you own, filter by rarity, equip from the collection.
         <b>Elements:</b> strong wind (6+) feeds fire blasts (+25% radius, "FIRE+WIND!"). The Elemental Beam chills — a hit SLOWs the foe's next turn (half moves). Homing Orbs chain lightning to another hero within 120px. Earth blasts dig deeper craters and raise rims at the edges.<br>
         <b>Pause:</b> <span class="kbd">Esc</span> or tap <b>II</b> &nbsp; <b>Mute:</b> <span class="kbd">M</span> &nbsp; <b>Camera:</b> <span class="kbd">C</span>
       </div>

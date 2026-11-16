@@ -1,22 +1,23 @@
 // ARCANE DUEL — keyboard + mouse + touch input.
 // Android v2 Tahap A: the old single-touch handlers (changedTouches[0])
 // are replaced by Pointer Events with per-pointerId tracking +
-// setPointerCapture, so joystick + aim + FIRE + power slider can be held
-// at the same time. Legacy TouchEvent handlers stay as a fallback (some
-// embedded WebViews / synthetic events never emit Pointer Events); they
-// are deduped against a recent pointer gesture so one touch never fires
-// twice. window blur / visibility loss releases every input.
+// setPointerCapture, so joystick + aim + FIRE can be held at the same time.
+// Legacy TouchEvent handlers stay as a fallback (some embedded WebViews /
+// synthetic events never emit Pointer Events); they are deduped against a
+// recent pointer gesture so one touch never fires twice. window blur /
+// visibility loss releases every input.
+// v3.1 Skin Feature — the big vertical POWER slider is GONE (it covered the
+// middle of the arena); power is set via the AIM pad / field drag / Space.
 export class Input {
   constructor(canvas, game, renderer, onPause) {
     this.canvas = canvas; this.game = game; this.renderer = renderer; this.onPause = onPause;
     this.keys = new Set();
     this._lastMove = performance.now();
     // Android v2 Tahap A — active pointers: id -> { role, x0, y0, t, moved }
-    // roles: 'joystick' | 'aim' | 'slider' | 'aimpad' (v3.1 P0 — left AIM pad:
+    // roles: 'joystick' | 'aim' | 'aimpad' (v3.1 P0 — left AIM pad:
     // hold to aim, drag to steer, release to fire). FIRE/buttons resolve on down.
     this.pointers = new Map();
     this._ptrDownAt = 0; this._ptrUpAt = 0;
-    this._mouseSlider = false;
     this.game.joystick = { dx: 0, dy: 0 };
     this.game.pressFlash = null;
     this._bind();
@@ -58,6 +59,11 @@ export class Input {
     if (pf && x >= pf.x && x <= pf.x + pf.w && y >= pf.y && y <= pf.y + pf.h) {
       if (g.phase === 'aim' && !g.active().ai) { this._flash('pow'); g.fire(); return true; }
     }
+    // v3.1 Skin Feature — POW button (POINT 100) fires the ultimate.
+    const pu = this.renderer.uiRegions.powUlt;
+    if (pu && x >= pu.x && x <= pu.x + pu.w && y >= pu.y && y <= pu.y + pu.h) {
+      if (g.phase === 'aim' && !g.active().ai) { this._flash('powult'); g.useSkill(3); return true; }
+    }
     // v3 — touch FIRE button (big, bottom right). A tap here must NOT
     // also start an aim drag (it returns before any aim handling).
     const fb = this.renderer.uiRegions.fireBtn;
@@ -91,7 +97,7 @@ export class Input {
   _inUiRegion(x, y) {
     const r = this.renderer.uiRegions;
     const inRect = (q) => q && x >= q.x && x <= q.x + q.w && y >= q.y && y <= q.y + q.h;
-    if (inRect(r.powFire) || inRect(r.fireBtn) || inRect(r.powerSlider) || inRect(r.pauseBtn) || inRect(r.camBtn)) return true;
+    if (inRect(r.powFire) || inRect(r.powUlt) || inRect(r.fireBtn) || inRect(r.pauseBtn) || inRect(r.camBtn)) return true;
     const j = r.joystick;
     if (j && Math.hypot(x - j.cx, y - j.cy) <= j.grabR) return true;
     // v3.1 P0 — the AIM pad is a HUD control too: the mouse must not
@@ -118,15 +124,8 @@ export class Input {
     this.game.joystick = { dx: 0, dy: 0 };
     this.game.moveDir = 0;
   }
-  // Android v2 Tahap A — vertical power slider: top = 100, bottom = 0.
-  _sliderSetPower(y) {
-    const s = this.renderer.uiRegions.powerSlider;
-    if (!s) return;
-    const frac = Math.max(0, Math.min(1, (s.y + s.h - y) / s.h));
-    this.game.setAim(this.game.aim.angle, Math.round(frac * 100));
-  }
   // Shared pointer/touch down handling. Returns the role assigned to this
-  // pointer ('joystick' | 'aim' | 'slider') or null (button / ignored).
+  // pointer ('joystick' | 'aim' | 'aimpad') or null (button / ignored).
   _down(x, y, id) {
     const g = this.game;
     if (g.state !== 'combat') return null;
@@ -136,13 +135,6 @@ export class Input {
       this.pointers.set(id, { role: 'joystick', x0: x, y0: y, t: performance.now(), moved: false });
       this._joystickUpdate(x, y);
       return 'joystick';
-    }
-    // Power slider.
-    const s = this.renderer.uiRegions.powerSlider;
-    if (s && g.phase === 'aim' && !g.active().ai && x >= s.x - 8 && x <= s.x + s.w + 8 && y >= s.y - 8 && y <= s.y + s.h + 8) {
-      this.pointers.set(id, { role: 'slider', x0: x, y0: y, t: performance.now(), moved: false });
-      this._sliderSetPower(y);
-      return 'slider';
     }
     // v3.1 P0 — left AIM pad (user request): hold to aim, drag to steer,
     // release to fire. The drag is RELATIVE (like a joystick): dragging up
@@ -176,7 +168,6 @@ export class Input {
     if (Math.hypot(x - rec.x0, y - rec.y0) > 12) rec.moved = true;
     const g = this.game;
     if (rec.role === 'joystick') this._joystickUpdate(x, y);
-    else if (rec.role === 'slider') this._sliderSetPower(y);
     else if (rec.role === 'aimpad') {
       // v3.1 P0 — relative aim drag: up = higher arc, right = more power.
       // Screen-relative (same for both heroes — the live preview shows
@@ -219,7 +210,6 @@ export class Input {
   releaseAllInputs() {
     this.pointers.clear();
     this.keys.clear();
-    this._mouseSlider = false;
     const g = this.game;
     g.moveDir = 0; g.joystick = { dx: 0, dy: 0 }; g.charging = false;
     g.aimHolding = false; g.aimPadKnob = { dx: 0, dy: 0 }; // v3.1 P0 — a held aim must never survive an app switch
@@ -227,7 +217,6 @@ export class Input {
   _bind() {
     const g = this.game, c = this.canvas;
     c.addEventListener('mousemove', e => {
-      if (this._mouseSlider) { const { y } = this._toLogical(e); this._sliderSetPower(y); return; }
       if (g.state !== 'combat' || g.phase !== 'aim') return;
       const p = g.active(); if (!p || p.ai) return;
       const { x, y } = this._toLogical(e);
@@ -240,11 +229,6 @@ export class Input {
     c.addEventListener('mousedown', e => {
       if (g.state !== 'combat') return;
       const { x, y } = this._toLogical(e);
-      // Android v2 Tahap A — the power slider also works with a mouse drag.
-      const s = this.renderer.uiRegions.powerSlider;
-      if (s && g.phase === 'aim' && !g.active().ai && x >= s.x - 8 && x <= s.x + s.w + 8 && y >= s.y - 8 && y <= s.y + s.h + 8) {
-        this._mouseSlider = true; this._sliderSetPower(y); return;
-      }
       // v2 — teleport targeting: a click while armed teleports instead of firing.
       if (g.teleportMode && g.phase === 'aim' && !g.active().ai) {
         const w = g.screenToWorld(x, y);
@@ -253,7 +237,6 @@ export class Input {
       if (this._hitRegions(x, y)) return;
       if (g.phase === 'aim' && !g.active().ai) g.fire();
     });
-    window.addEventListener('mouseup', () => { this._mouseSlider = false; });
     // ---- Pointer Events (touch + pen). Mouse keeps its own handlers above
     // so a mouse pointer never double-fires through both paths.
     c.addEventListener('pointerdown', e => {
